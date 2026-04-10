@@ -24,8 +24,8 @@ class Transaction(BaseModel):
     status_updated: int | None = None
     created: int | None = None
     creator: str | None = None
-    roster_ids: list[int] = []
-    consenter_ids: list[int] = []
+    roster_ids: list[int] | None = None
+    consenter_ids: list[int] | None = None
     adds: dict[str, int] | None = None  # player_id -> roster_id
     drops: dict[str, int] | None = None  # player_id -> roster_id
     draft_picks: list[TradedPick] = []
