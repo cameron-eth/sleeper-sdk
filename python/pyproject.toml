@@ -24,6 +24,9 @@ dev = [
   "nflreadpy>=0.1.0",
 ]
 
+[project.scripts]
+sleeper = "sleeper.cli:main"
+
 [tool.hatch.build.targets.wheel]
 packages = ["src/sleeper"]
 
