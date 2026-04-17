@@ -639,3 +639,9 @@ def _compute_implied_price(
         implied_price=max(implied_price, 0),
         is_solo=len(player_side.player_ids) == 1,
     )
+
+
+def detect_scoring_type(league) -> str:
+    """Return 'sf' if the league uses a SUPER_FLEX position, else '1qb'."""
+    positions = getattr(league, "roster_positions", None) or []
+    return "sf" if "SUPER_FLEX" in positions else "1qb"

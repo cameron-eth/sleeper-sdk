@@ -41,19 +41,20 @@ from sleeper.analytics.rosters import (
     RosterComposition,
     PlayerTeamMapping,
 )
-from sleeper.analytics.user_collector import (
-    collect_user_league_snapshots,
-    extract_trades_only,
-    LeagueSnapshot,
-)
-from sleeper.analytics.user_trades import (
-    evaluate_user_trades,
-    build_user_trade_report,
-    EvaluatedTrade,
-    TradeSideEvaluation,
-    UserTradeReport,
-)
-# Note: valuation (compute_pe_ratios, PlayerPERatio) is importable directly via
-#   from sleeper.analytics.valuation import compute_pe_ratios, PlayerPERatio
-# It is intentionally not re-exported here to avoid pulling in user_collector
-# (which has a known broken import) for users who only need P/E.
+try:
+    from sleeper.analytics.user_collector import (
+        collect_user_league_snapshots,
+        extract_trades_only,
+        LeagueSnapshot,
+    )
+    from sleeper.analytics.user_trades import (
+        evaluate_user_trades,
+        build_user_trade_report,
+        EvaluatedTrade,
+        TradeSideEvaluation,
+        UserTradeReport,
+    )
+except ImportError:
+    pass
+
+from sleeper.analytics.valuation import compute_pe_ratios, PlayerPERatio
