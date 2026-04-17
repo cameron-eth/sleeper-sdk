@@ -53,3 +53,7 @@ from sleeper.analytics.user_trades import (
     TradeSideEvaluation,
     UserTradeReport,
 )
+# Note: valuation (compute_pe_ratios, PlayerPERatio) is importable directly via
+#   from sleeper.analytics.valuation import compute_pe_ratios, PlayerPERatio
+# It is intentionally not re-exported here to avoid pulling in user_collector
+# (which has a known broken import) for users who only need P/E.

@@ -626,6 +626,135 @@ def cmd_picks(args: argparse.Namespace) -> None:
         print("(no picks found matching filters)")
 
 
+def cmd_pe_ratio(args: argparse.Namespace) -> None:
+    """P/E ratio: KTC price vs real fantasy production (FFPG)."""
+    from datetime import datetime
+    from sleeper.enrichment.ktc import fetch_ktc_players, build_ktc_to_sleeper_map
+    # Load valuation module by file path to bypass analytics/__init__.py
+    # (which has a pre-existing broken import on user_collector).
+    import importlib.util
+    import sys as _sys
+    import os
+    _val_path = os.path.join(os.path.dirname(__file__), "analytics", "valuation.py")
+    _spec = importlib.util.spec_from_file_location("_sleeper_valuation", _val_path)
+    valuation = importlib.util.module_from_spec(_spec)
+    _sys.modules["_sleeper_valuation"] = valuation
+    _spec.loader.exec_module(valuation)
+    compute_pe_ratios = valuation.compute_pe_ratios
+
+    fmt = args.format
+    scoring = args.scoring
+    min_games = args.min_games
+    n = args.top
+    sort_key = args.sort
+    pos_filter = args.position.upper() if args.position else None
+
+    # Parse seasons
+    if args.seasons:
+        try:
+            seasons = [int(s.strip()) for s in args.seasons.split(",")]
+        except ValueError:
+            print(f"Invalid --seasons '{args.seasons}'. Use a comma-separated list of years.")
+            sys.exit(1)
+    else:
+        seasons = [datetime.now().year]
+
+    # Stats source (optional dep)
+    try:
+        from sleeper.enrichment.stats import get_season_stats, HAS_NFLREADPY
+    except ImportError:
+        print("nflreadpy is required for pe-ratio. Install with: pip install 'sleeper-sdk[nfl-data]'")
+        sys.exit(1)
+    if not HAS_NFLREADPY:
+        print("nflreadpy is required for pe-ratio. Install with: pip install 'sleeper-sdk[nfl-data]'")
+        sys.exit(1)
+
+    print(f"Fetching KTC values ({fmt.upper()})...")
+    ktc_players = fetch_ktc_players()
+
+    # Need sleeper IDs on each KTC player so we can join to stats.
+    print("Loading Sleeper player metadata...")
+    import asyncio
+    from sleeper.client import SleeperClient
+
+    async def _get_sleeper_players():
+        async with SleeperClient() as client:
+            return await client.get_all_players()
+
+    sleeper_players = asyncio.run(_get_sleeper_players())
+    ktc_to_sleeper = build_ktc_to_sleeper_map(ktc_players, sleeper_players)
+    for p in ktc_players:
+        p.sleeper_id = ktc_to_sleeper.get(p.ktc_id)
+
+    print(f"Loading NFL stats for seasons {seasons} (this may take a moment)...")
+    season_stats = get_season_stats(seasons)
+
+    pes = compute_pe_ratios(
+        ktc_players,
+        season_stats,
+        seasons=seasons,
+        fmt=fmt,
+        scoring=scoring,
+        min_games=min_games,
+    )
+
+    # Filter
+    if pos_filter:
+        pes = [r for r in pes if r.position == pos_filter]
+    if args.max_age is not None:
+        pes = [r for r in pes if r.age is not None and r.age <= args.max_age]
+    if args.min_age is not None:
+        pes = [r for r in pes if r.age is not None and r.age >= args.min_age]
+    if args.min_ppg is not None:
+        pes = [r for r in pes if r.ffpg >= args.min_ppg]
+    if args.min_ktc is not None:
+        pes = [r for r in pes if r.ktc_value >= args.min_ktc]
+    if args.exclude_speculative:
+        pes = [r for r in pes if r.signal != "speculative"]
+
+    # Sort
+    if sort_key == "pe":
+        pes.sort(key=lambda r: (r.pe_ratio is None, r.pe_ratio if r.pe_ratio is not None else 0))
+    elif sort_key == "pe-desc":
+        pes.sort(key=lambda r: (r.pe_ratio is None, -(r.pe_ratio or 0)))
+    elif sort_key == "value":
+        pes.sort(key=lambda r: -r.ktc_value)
+    elif sort_key == "ffpg":
+        pes.sort(key=lambda r: -r.ffpg)
+
+    top = pes[:n]
+    if not top:
+        print("(no players matched)")
+        return
+
+    headers = ["Player", "Pos", "Team", "Age", "KTC", "FFPG", "Games", "PE", "Signal"]
+    rows = []
+    for r in top:
+        age_str = f"{r.age:.0f}" if r.age else "-"
+        pe_str = f"{r.pe_ratio:.2f}" if r.pe_ratio is not None else "—"
+        rows.append([
+            r.name,
+            r.position,
+            r.team,
+            age_str,
+            f"{r.ktc_value:,}",
+            f"{r.ffpg:.1f}" if r.ffpg else "-",
+            str(r.games) if r.games else "-",
+            pe_str,
+            r.signal,
+        ])
+
+    title = f"Player P/E Ratios ({fmt.upper()}, seasons={seasons}, scoring={scoring.upper()})"
+    if pos_filter:
+        title += f" [{pos_filter}]"
+    print()
+    print(title)
+    print()
+    print(_format_table(headers, rows))
+    print()
+    print("PE < 0.7 = undervalued | ~1.0 = fair | > 1.5 = overvalued | — = speculative (insufficient games)")
+
+
 # ---------------------------------------------------------------------------
 # Main / argparse
 # ---------------------------------------------------------------------------
@@ -680,6 +809,28 @@ def main() -> None:
     bs.add_argument("--min-trades", type=int, default=2, dest="min_trades",
                     help="Minimum trades required (default: 2)")
 
+    # pe-ratio
+    pe = subparsers.add_parser("pe-ratio", help="Player P/E ratio: KTC price vs real production (FFPG)")
+    pe.add_argument("--format", choices=["sf", "1qb"], default="sf", help="Format (default: sf)")
+    pe.add_argument("--seasons", help="Comma-separated season years (default: current year)")
+    pe.add_argument("--scoring", choices=["ppr", "standard"], default="ppr", help="Scoring (default: ppr)")
+    pe.add_argument("--position", help="Filter by position (QB, RB, WR, TE)")
+    pe.add_argument("--min-games", type=int, default=4, dest="min_games",
+                    help="Minimum games for non-speculative PE (default: 4)")
+    pe.add_argument("--max-age", type=float, default=None, dest="max_age",
+                    help="Exclude players older than this (e.g. 26 for dynasty targets)")
+    pe.add_argument("--min-age", type=float, default=None, dest="min_age",
+                    help="Exclude players younger than this")
+    pe.add_argument("--min-ppg", type=float, default=None, dest="min_ppg",
+                    help="Minimum FFPG to include (e.g. 8 to skip irrelevant scrubs)")
+    pe.add_argument("--min-ktc", type=int, default=None, dest="min_ktc",
+                    help="Minimum KTC value to include (e.g. 3000 to skip deep bench)")
+    pe.add_argument("--exclude-speculative", action="store_true", dest="exclude_speculative",
+                    help="Hide players with no real production sample (rookies/IR)")
+    pe.add_argument("--top", type=int, default=25, help="Number of players to show (default: 25)")
+    pe.add_argument("--sort", choices=["pe", "pe-desc", "value", "ffpg"], default="pe",
+                    help="Sort order (default: pe = cheapest multiples first)")
+
     # picks
     pk = subparsers.add_parser("picks", help="Show future pick assets in a league with KTC values")
     pk.add_argument("username", help="Sleeper username")
@@ -708,6 +859,8 @@ def main() -> None:
         cmd_buy_sell(args)
     elif args.command == "picks":
         cmd_picks(args)
+    elif args.command == "pe-ratio":
+        cmd_pe_ratio(args)
 
 
 if __name__ == "__main__":
