@@ -755,6 +755,103 @@ def cmd_pe_ratio(args: argparse.Namespace) -> None:
     print("PE < 0.7 = undervalued | ~1.0 = fair | > 1.5 = overvalued | — = speculative (insufficient games)")
 
 
+def cmd_ktc_trend(args: argparse.Namespace) -> None:
+    """KTC value history from local snapshot files."""
+    from sleeper.enrichment.ktc_history import (
+        load_player_history,
+        top_movers,
+        list_snapshot_dates,
+    )
+
+    sub = getattr(args, "kt_subcommand", None)
+    snapshot_dir = getattr(args, "snapshot_dir", None) or "data/ktc"
+
+    dates = list_snapshot_dates(snapshot_dir)
+    if not dates:
+        print(f"No KTC snapshots found in '{snapshot_dir}'.")
+        print("Run: python scripts/snapshot_ktc.py")
+        return
+
+    if sub == "player":
+        name = " ".join(args.player_name)
+        trend = load_player_history(name, snapshot_dir=snapshot_dir, days=args.days)
+        if not trend:
+            print(f"No history found for '{name}' in {snapshot_dir}")
+            return
+
+        attr = "sf_value" if args.format == "sf" else "oqb_value"
+        rank_attr = "sf_rank" if args.format == "sf" else "oqb_rank"
+
+        print()
+        print(f"{trend.name} ({trend.position} {trend.team}) — KTC {args.format.upper()} trend")
+        print(f"Snapshots: {len(trend.points)} (from {trend.points[0].date} to {trend.points[-1].date})")
+        print()
+
+        headers = ["Date", "Value", "Rank", "Delta"]
+        rows = []
+        prev = None
+        for pt in trend.points:
+            val = getattr(pt, attr)
+            rank = getattr(pt, rank_attr)
+            delta = "" if prev is None else f"{val - prev:+d}"
+            rows.append([pt.date, f"{val:,}", str(rank), delta])
+            prev = val
+        print(_format_table(headers, rows))
+
+        total_delta = trend.delta(args.format)
+        if total_delta is not None:
+            pct = (total_delta / getattr(trend.points[0], attr)) * 100 if getattr(trend.points[0], attr) else 0
+            arrow = "↑" if total_delta > 0 else ("↓" if total_delta < 0 else "→")
+            print()
+            print(f"Net: {arrow} {total_delta:+d} ({pct:+.1f}%)")
+        return
+
+    if sub == "movers":
+        movers = top_movers(
+            fmt=args.format,
+            days=args.days,
+            min_value=args.min_value,
+            limit=args.top,
+            snapshot_dir=snapshot_dir,
+        )
+        if not movers:
+            print(f"Not enough snapshots in the last {args.days} days to compute movers.")
+            print(f"Available snapshots: {dates}")
+            return
+
+        print()
+        print(f"Top KTC movers ({args.format.upper()}, last {args.days}d, min value {args.min_value:,})")
+        print()
+        headers = ["Player", "Pos", "Team", "Start", "End", "Delta", "%"]
+        rows = []
+        attr = "sf_value" if args.format == "sf" else "oqb_value"
+        for trend, delta in movers:
+            start = getattr(trend.points[0], attr)
+            end = getattr(trend.points[-1], attr)
+            pct = (delta / start * 100) if start else 0
+            rows.append([
+                trend.name,
+                trend.position,
+                trend.team or "FA",
+                f"{start:,}",
+                f"{end:,}",
+                f"{delta:+d}",
+                f"{pct:+.1f}%",
+            ])
+        print(_format_table(headers, rows))
+        return
+
+    # No subcommand given — list what snapshots we have
+    print(f"Snapshots in {snapshot_dir}: {len(dates)}")
+    if dates:
+        print(f"  Oldest: {dates[0]}")
+        print(f"  Newest: {dates[-1]}")
+    print()
+    print("Usage:")
+    print("  sleeper ktc-trend player 'Jayden Daniels' [--days 30] [--format sf|1qb]")
+    print("  sleeper ktc-trend movers [--days 7] [--top 20] [--format sf|1qb]")
+
+
 # ---------------------------------------------------------------------------
 # Main / argparse
 # ---------------------------------------------------------------------------
@@ -809,6 +906,24 @@ def main() -> None:
     bs.add_argument("--min-trades", type=int, default=2, dest="min_trades",
                     help="Minimum trades required (default: 2)")
 
+    # ktc-trend
+    kt = subparsers.add_parser("ktc-trend", help="Player KTC value history from local daily snapshots")
+    kt_sub = kt.add_subparsers(dest="kt_subcommand")
+
+    kt_player = kt_sub.add_parser("player", help="Show one player's value over time")
+    kt_player.add_argument("player_name", nargs="+", help="Player name (or ktc_id)")
+    kt_player.add_argument("--format", choices=["sf", "1qb"], default="sf", help="Format (default: sf)")
+    kt_player.add_argument("--days", type=int, default=None, help="Limit to last N days")
+    kt_player.add_argument("--snapshot-dir", default="data/ktc", dest="snapshot_dir")
+
+    kt_movers = kt_sub.add_parser("movers", help="Biggest value changes in a window")
+    kt_movers.add_argument("--format", choices=["sf", "1qb"], default="sf", help="Format (default: sf)")
+    kt_movers.add_argument("--days", type=int, default=7, help="Window size in days (default: 7)")
+    kt_movers.add_argument("--top", type=int, default=20, help="Number of players (default: 20)")
+    kt_movers.add_argument("--min-value", type=int, default=2000, dest="min_value",
+                           help="Minimum current value to include (default: 2000)")
+    kt_movers.add_argument("--snapshot-dir", default="data/ktc", dest="snapshot_dir")
+
     # pe-ratio
     pe = subparsers.add_parser("pe-ratio", help="Player P/E ratio: KTC price vs real production (FFPG)")
     pe.add_argument("--format", choices=["sf", "1qb"], default="sf", help="Format (default: sf)")
@@ -861,6 +976,8 @@ def main() -> None:
         cmd_picks(args)
     elif args.command == "pe-ratio":
         cmd_pe_ratio(args)
+    elif args.command == "ktc-trend":
+        cmd_ktc_trend(args)
 
 
 if __name__ == "__main__":

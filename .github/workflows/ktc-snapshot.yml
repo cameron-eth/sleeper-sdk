@@ -1,0 +1,43 @@
+name: KTC Daily Snapshot
+
+on:
+  schedule:
+    # 10:00 UTC daily = 6am ET / 3am PT
+    - cron: "0 10 * * *"
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+jobs:
+  snapshot:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install package
+        working-directory: python
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .
+
+      - name: Write KTC snapshot
+        working-directory: python
+        run: python scripts/snapshot_ktc.py --out-dir ../data/ktc
+
+      - name: Commit snapshot
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add data/ktc/
+          if git diff --cached --quiet; then
+            echo "No KTC changes to commit"
+            exit 0
+          fi
+          DATE=$(date -u +%Y-%m-%d)
+          git commit -m "ktc: snapshot ${DATE}"
+          git push
