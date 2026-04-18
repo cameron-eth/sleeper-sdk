@@ -1014,10 +1014,31 @@ def cmd_suggest_trades(args) -> None:
 
 
 def cmd_find_trades(args) -> None:
-    """Find trades targeting specific positions, with include/exclude filters."""
+    """Find trades targeting specific positions, with include/exclude filters.
+
+    Modes:
+    - Normal: Find trades with overpay tolerance (default: 300-3500)
+    - upgrade: Find trades where you get more value back (negative overpay)
+    - downtiering: Find trades where you liquidate for lower tier (positive overpay)
+    """
     import asyncio
     from sleeper.client import SleeperClient
     from sleeper.enrichment.ktc import fetch_ktc_players, build_ktc_to_sleeper_map
+
+    # Auto-adjust thresholds based on mode if not explicitly set
+    if args.min_overpay is None:
+        if args.mode == "upgrade":
+            args.min_overpay = -5000
+        else:
+            args.min_overpay = 300
+
+    if args.max_overpay is None:
+        if args.mode == "upgrade":
+            args.max_overpay = 0
+        elif args.mode == "downtiering":
+            args.max_overpay = 5000
+        else:
+            args.max_overpay = 3500
 
     user, league = _resolve_league(args.username, args.league)
     rosters, sleeper_players = _fetch_roster_and_players(league.league_id)
@@ -1048,7 +1069,9 @@ def cmd_find_trades(args) -> None:
     exclude_set = set(n.lower().replace(".", "").replace("'", "").strip() for n in (args.exclude or []))
     target_positions = set(args.position or [])
 
-    print(f"\nSearching for {target_positions if target_positions else 'any position'} trades...")
+    mode_str = f" ({args.mode} mode)" if args.mode != "normal" else ""
+    print(f"\nSearching for {target_positions if target_positions else 'any position'} trades{mode_str}...")
+    print(f"  Overpay range: {args.min_overpay:+,} to {args.max_overpay:+,}")
     if include_set:
         print(f"  Include: {', '.join(args.include)}")
     if exclude_set:
@@ -1467,16 +1490,18 @@ def main() -> None:
                                help="Find trades targeting specific positions with filters")
     ft.add_argument("username", help="Sleeper username")
     ft.add_argument("--league", help="League name filter")
+    ft.add_argument("--mode", choices=["normal", "upgrade", "downtiering"], default="normal",
+                    help="Trade mode: normal (balanced overpay), upgrade (get more value), downtiering (liquidate)")
     ft.add_argument("--position", nargs="+", default=[], dest="position",
                     help="Target position(s) to search for (QB RB WR TE)")
     ft.add_argument("--include", nargs="+", default=None,
                     help="Only consider these players as targets")
     ft.add_argument("--exclude", nargs="+", default=None,
                     help="Exclude these players from targets")
-    ft.add_argument("--min-overpay", type=int, default=300, dest="min_overpay",
-                    help="Minimum KTC overpay threshold (default: 300)")
-    ft.add_argument("--max-overpay", type=int, default=3500, dest="max_overpay",
-                    help="Maximum KTC overpay threshold (default: 3500)")
+    ft.add_argument("--min-overpay", type=int, default=None, dest="min_overpay",
+                    help="Minimum KTC overpay threshold (auto-set by mode if not specified)")
+    ft.add_argument("--max-overpay", type=int, default=None, dest="max_overpay",
+                    help="Maximum KTC overpay threshold (auto-set by mode if not specified)")
     ft.add_argument("--min-ktc", type=int, default=0, dest="min_ktc",
                     help="Filter targets by minimum KTC value (default: 0)")
     ft.add_argument("--top", type=int, default=15,
