@@ -183,9 +183,11 @@ python -m sleeper.cli <command> [options]
 | `trade-check --give ... --get ...` | Evaluate a proposed trade |
 | `trending` | Biggest 7-day KTC movers (up / down / both) |
 | `buy-sell buy\|sell` | Players trading below / above their KTC value |
-| `picks <user>` | Future pick assets across the league |
+| `ktc-trend <player>` | Historical KTC value for a player (from daily snapshots) |
+| `picks <user>` | Future pick assets across the league with KTC values |
 | `pe-ratio` | Price-to-Earnings ratio — KTC price vs real FFPG |
 | `suggest-trades <user>` | 1-for-1 trades that improve your roster's positional balance |
+| `find-trades <user>` | Flexible trade finder with position, include/exclude, and mode filters |
 | `send-trade <user>` | Fire a `propose_trade` mutation against Sleeper (auth required) |
 
 ### Suggest → Send workflow
@@ -242,6 +244,44 @@ python -m sleeper.cli pe-ratio \
 | `--sort` | `pe` | `pe`, `pe-desc`, `value`, `ffpg` |
 
 Requires the `nfl-data` extra (`pip install 'sleeper-sdk[nfl-data]'`) for live NFL stats via `nflreadpy`.
+
+### `find-trades` — Flexible Trade Finder
+
+Search for trades targeting any position(s), with powerful include/exclude/mode filters. Find 1-for-1 or multi-asset combinations that match your criteria.
+
+```bash
+# Find all elite RB trades where you overpay 500-1500 KTC
+python -m sleeper.cli find-trades camfleety --league "Meat Market" \
+    --position RB --min-ktc 5000 --max-overpay 1500
+
+# Find trades targeting specific players, excluding your own
+python -m sleeper.cli find-trades camfleety --league "Meat Market" \
+    --position RB \
+    --include "Breece Hall" "De'Von Achane" "Jonathan Taylor" \
+    --exclude "TreVeyon Henderson" "Quinshon Judkins"
+
+# Upgrade mode: find trades where you get more value back
+python -m sleeper.cli find-trades camfleety --league "Meat Market" \
+    --mode upgrade --position QB --top 20
+
+# Downtiering mode: liquidate high assets for lower-tier players
+python -m sleeper.cli find-trades camfleety --league "Meat Market" \
+    --mode downtiering --top 25
+```
+
+| Flag | Default | Purpose |
+|------|---------|---------|
+| `--position` | all | Target position(s): `QB RB WR TE` (space-separated) |
+| `--include` | none | Only consider these players as targets |
+| `--exclude` | none | Exclude these players from results |
+| `--mode` | `normal` | `normal` (balanced overpay), `upgrade` (get more back), `downtiering` (liquidate) |
+| `--min-overpay` | mode-dependent | Minimum KTC overpay (default: 300 normal, -5000 upgrade) |
+| `--max-overpay` | mode-dependent | Maximum KTC overpay (default: 3500 normal, 0 upgrade, 5000 downtiering) |
+| `--min-ktc` | 0 | Filter targets by minimum KTC value |
+| `--top` | 15 | Max trades to show |
+| `--single-only` | false | Only single-player trades (don't combine assets) |
+
+The command combines your highest-value chips (QBs, WRs, TEs) to match target players. Trades are scored by target value and overpay balance.
 
 ## Examples
 
