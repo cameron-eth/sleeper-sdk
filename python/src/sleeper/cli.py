@@ -1013,6 +1013,174 @@ def cmd_suggest_trades(args) -> None:
     _save_suggestions_cache(cache_path, cache_payload)
 
 
+def cmd_find_trades(args) -> None:
+    """Find trades targeting specific positions, with include/exclude filters."""
+    import asyncio
+    from sleeper.client import SleeperClient
+    from sleeper.enrichment.ktc import fetch_ktc_players, build_ktc_to_sleeper_map
+
+    user, league = _resolve_league(args.username, args.league)
+    rosters, sleeper_players = _fetch_roster_and_players(league.league_id)
+
+    async def _get_users():
+        async with SleeperClient() as client:
+            return await client.leagues.get_users(league.league_id)
+
+    league_users = asyncio.run(_get_users())
+    user_display: dict[str, str] = {}
+    for u in (league_users or []):
+        uid = str(u.user_id) if hasattr(u, "user_id") else ""
+        disp = u.display_name if hasattr(u, "display_name") else ""
+        if uid and disp:
+            user_display[uid] = disp
+
+    my_roster = next((r for r in rosters if r.owner_id == user.user_id), None)
+    if my_roster is None:
+        print(f"No roster found for '{args.username}' in {league.name}.")
+        sys.exit(1)
+
+    print("Fetching KTC values...")
+    ktc_players = fetch_ktc_players()
+    sleeper_to_ktc = _build_sleeper_to_ktc(ktc_players, sleeper_players)
+
+    # Parse include/exclude player lists
+    include_set = set(n.lower().replace(".", "").replace("'", "").strip() for n in (args.include or []))
+    exclude_set = set(n.lower().replace(".", "").replace("'", "").strip() for n in (args.exclude or []))
+    target_positions = set(args.position or [])
+
+    print(f"\nSearching for {target_positions if target_positions else 'any position'} trades...")
+    if include_set:
+        print(f"  Include: {', '.join(args.include)}")
+    if exclude_set:
+        print(f"  Exclude: {', '.join(args.exclude)}")
+
+    # Build list of trade targets: RBs/WRs/TEs from other rosters matching filters
+    trade_targets = []
+    for roster in rosters:
+        if roster.owner_id == user.user_id:
+            continue
+        for pid in (roster.players or []):
+            p = sleeper_players.get(pid)
+            if not p or not p.position:
+                continue
+
+            # Filter by target position
+            if target_positions and p.position not in target_positions:
+                continue
+
+            # Check include/exclude
+            pname = (p.full_name or "").lower().replace(".", "").replace("'", "")
+            if include_set and pname not in include_set:
+                continue
+            if exclude_set and pname in exclude_set:
+                continue
+
+            ktc_p = sleeper_to_ktc.get(pid)
+            ktc_val = (ktc_p.superflex.value if ktc_p and ktc_p.superflex else 0) or 0
+
+            if ktc_val >= (args.min_ktc or 0):
+                owner = user_display.get(str(roster.owner_id), "?")
+                trade_targets.append({
+                    "owner": owner,
+                    "roster_id": roster.roster_id,
+                    "name": p.full_name,
+                    "position": p.position,
+                    "ktc": ktc_val,
+                })
+
+    if not trade_targets:
+        print("\nNo matching players found. Try adjusting filters.")
+        return
+
+    trade_targets.sort(key=lambda x: -x["ktc"])
+
+    # Build list of my trade chips
+    my_chips = []
+    for pid in (my_roster.players or []):
+        p = sleeper_players.get(pid)
+        if not p or p.position not in ("WR", "TE", "QB", "RB"):
+            continue
+
+        ktc_p = sleeper_to_ktc.get(pid)
+        val = (ktc_p.superflex.value if ktc_p and ktc_p.superflex else 0) or 0
+
+        # Skip excluded players
+        pname = (p.full_name or "").lower().replace(".", "").replace("'", "")
+        if pname in exclude_set:
+            continue
+
+        if val > 0:
+            my_chips.append({
+                "name": p.full_name,
+                "position": p.position,
+                "ktc": val,
+                "pid": pid,
+            })
+
+    my_chips.sort(key=lambda x: -x["ktc"])
+
+    # Find trades: target player vs combinations of my chips
+    trades = []
+    for target in trade_targets:
+        # Single chip
+        for chip in my_chips:
+            overpay = chip["ktc"] - target["ktc"]
+            if args.min_overpay <= overpay <= args.max_overpay:
+                trades.append({
+                    "target": target,
+                    "chips": [chip],
+                    "overpay": overpay,
+                    "score": target["ktc"] * 1.5,
+                })
+
+        # Chip + secondary (if different position)
+        if not args.single_only:
+            for i, chip1 in enumerate(my_chips):
+                for chip2 in my_chips[i+1:]:
+                    total = chip1["ktc"] + chip2["ktc"]
+                    overpay = total - target["ktc"]
+                    if args.min_overpay <= overpay <= args.max_overpay:
+                        trades.append({
+                            "target": target,
+                            "chips": [chip1, chip2],
+                            "overpay": overpay,
+                            "score": target["ktc"] * 1.5 - overpay * 0.3,
+                        })
+
+    if not trades:
+        print("\nNo trades found within overpay range. Try adjusting --min-overpay/--max-overpay.")
+        return
+
+    trades.sort(key=lambda t: -t["score"])
+
+    # Display results
+    headers = ["#", "Partner", "Target", "Pos", "KTC", "You Give", "Total KTC", "Δ Value", "Δ %"]
+    rows = []
+    for i, trade in enumerate(trades[:args.top], 1):
+        target = trade["target"]
+        chips_str = " + ".join(c["name"] for c in trade["chips"])
+        chips_ktc = sum(c["ktc"] for c in trade["chips"])
+        pct = (trade["overpay"] / target["ktc"]) * 100
+        rows.append([
+            str(i),
+            target["owner"][:15],
+            target["name"][:20],
+            target["position"],
+            f"{target['ktc']:,}",
+            chips_str[:30],
+            f"{chips_ktc:,}",
+            f"{trade['overpay']:+,}",
+            f"{pct:+.1f}%",
+        ])
+
+    print()
+    print(f"Found {len(trades)} trades. Showing top {min(args.top, len(trades))}:\n")
+    print(_format_table(headers, rows))
+    print()
+    print(f"To send a trade: sleeper send-trade {args.username} --league \"{league.name}\" \\")
+    print(f"  --to-roster <roster_id> --send <player> --get <target>")
+
+
 def cmd_send_trade(args) -> None:
     """Fire a propose_trade mutation against Sleeper. Always previews + asks for confirmation."""
     import asyncio
@@ -1294,6 +1462,28 @@ def main() -> None:
     st.add_argument("--with-pe", action="store_true", dest="with_pe",
                     help="Also compute P/E ratios for arbitrage scoring (slower; needs nflreadpy)")
 
+    # find-trades
+    ft = subparsers.add_parser("find-trades",
+                               help="Find trades targeting specific positions with filters")
+    ft.add_argument("username", help="Sleeper username")
+    ft.add_argument("--league", help="League name filter")
+    ft.add_argument("--position", nargs="+", default=[], dest="position",
+                    help="Target position(s) to search for (QB RB WR TE)")
+    ft.add_argument("--include", nargs="+", default=None,
+                    help="Only consider these players as targets")
+    ft.add_argument("--exclude", nargs="+", default=None,
+                    help="Exclude these players from targets")
+    ft.add_argument("--min-overpay", type=int, default=300, dest="min_overpay",
+                    help="Minimum KTC overpay threshold (default: 300)")
+    ft.add_argument("--max-overpay", type=int, default=3500, dest="max_overpay",
+                    help="Maximum KTC overpay threshold (default: 3500)")
+    ft.add_argument("--min-ktc", type=int, default=0, dest="min_ktc",
+                    help="Filter targets by minimum KTC value (default: 0)")
+    ft.add_argument("--top", type=int, default=15,
+                    help="Max trades to show (default: 15)")
+    ft.add_argument("--single-only", action="store_true", dest="single_only",
+                    help="Only show single-player trades (don't combine chips)")
+
     # send-trade
     sd = subparsers.add_parser("send-trade",
                                help="Fire a propose_trade mutation against Sleeper (auth required)")
@@ -1335,6 +1525,8 @@ def main() -> None:
         cmd_ktc_trend(args)
     elif args.command == "suggest-trades":
         cmd_suggest_trades(args)
+    elif args.command == "find-trades":
+        cmd_find_trades(args)
     elif args.command == "send-trade":
         cmd_send_trade(args)
 
