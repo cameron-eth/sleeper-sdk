@@ -58,3 +58,8 @@ except ImportError:
     pass
 
 from sleeper.analytics.valuation import compute_pe_ratios, PlayerPERatio
+from sleeper.analytics.trade_suggestions import (
+    suggest_trades,
+    TradeSuggestion,
+    PlayerLeg,
+)

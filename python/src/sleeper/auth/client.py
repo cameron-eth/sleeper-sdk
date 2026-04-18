@@ -48,6 +48,20 @@ def _decode_jwt_payload(jwt: str) -> dict:
         raise SleeperAuthError(f"Failed to decode JWT payload: {e}") from e
 
 
+def _normalize_errors(errs) -> list:
+    """Sleeper returns errors in inconsistent shapes:
+      - list of dicts (typical GraphQL)
+      - single dict with {"message": "..."} (HTTP 500 path)
+      - list of strings (rare)
+    Always return a list of dicts so callers can iterate uniformly.
+    """
+    if isinstance(errs, dict):
+        return [errs]
+    if isinstance(errs, list):
+        return [e if isinstance(e, dict) else {"message": str(e)} for e in errs]
+    return [{"message": str(errs)}]
+
+
 def inspect_token(jwt: str) -> TokenInfo:
     """Parse (but do not verify) a Sleeper JWT to see who it belongs to and when it expires."""
     payload = _decode_jwt_payload(jwt)
@@ -133,12 +147,13 @@ class SleeperAuthClient:
                 f"Non-JSON response (HTTP {resp.status_code}): {resp.text[:200]}"
             )
         if "errors" in body and body["errors"]:
-            codes = [e.get("code") for e in body["errors"]]
+            errs = _normalize_errors(body["errors"])
+            codes = [e.get("code") for e in errs if isinstance(e, dict)]
             if "unauthorized" in codes:
                 raise SleeperAuthError(
                     "Unauthorized — token may be invalid, expired, or lacking permissions"
                 )
-            raise SleeperAuthError(f"GraphQL errors: {body['errors']}")
+            raise SleeperAuthError(f"GraphQL errors: {errs}")
         return body.get("data") or {}
 
     # -- reads -------------------------------------------------------------
@@ -216,7 +231,10 @@ class SleeperAuthClient:
             league_id: Sleeper league id
             adds: list of (player_id, receiving_roster_id) — who GETS each player
             drops: list of (player_id, sending_roster_id) — who SENDS each player
-            draft_picks: optional pick payloads (format: "season-round-from_roster-to_roster")
+            draft_picks: optional pick payloads. Format is COMMA-separated, 5 ints:
+                "original_owner_roster,season,round,from_roster,to_roster"
+                e.g. "8,2026,1,7,8" = roster 8's own 2026 R1, currently held by
+                roster 7, sent to roster 8.
             waiver_budget: optional FAAB transfers (format: "from_roster-to_roster-amount")
             expires_at: optional unix timestamp when the offer expires
         """
@@ -290,3 +308,19 @@ class SleeperAuthClient:
             "leg": leg,
         })
         return data.get("reject_trade") or {}
+
+    def cancel_trade(self, league_id: str, transaction_id: str, leg: int) -> dict:
+        """Cancel a trade YOU proposed (works while it's still in 'proposed' status)."""
+        query = """
+        mutation cancel_trade($league_id: Snowflake!, $transaction_id: Snowflake!, $leg: Int!) {
+          cancel_trade(league_id: $league_id, transaction_id: $transaction_id, leg: $leg) {
+            transaction_id status type created
+          }
+        }
+        """
+        data = self.gql("cancel_trade", query, {
+            "league_id": league_id,
+            "transaction_id": transaction_id,
+            "leg": leg,
+        })
+        return data.get("cancel_trade") or {}

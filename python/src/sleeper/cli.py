@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 
 
@@ -852,6 +853,329 @@ def cmd_ktc_trend(args: argparse.Namespace) -> None:
     print("  sleeper ktc-trend movers [--days 7] [--top 20] [--format sf|1qb]")
 
 
+SUGGESTION_CACHE_DIR = os.path.join(os.path.expanduser("~"), ".sleeper-sdk")
+
+
+def _suggestion_cache_path(username: str, league_id: str) -> str:
+    safe = "".join(c if c.isalnum() else "_" for c in f"{username}__{league_id}")
+    return os.path.join(SUGGESTION_CACHE_DIR, f"suggestions_{safe}.json")
+
+
+def _save_suggestions_cache(path: str, payload: dict) -> None:
+    import json
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w") as f:
+        json.dump(payload, f, indent=2)
+
+
+def _load_suggestions_cache(path: str) -> dict | None:
+    import json
+    if not os.path.exists(path):
+        return None
+    try:
+        with open(path) as f:
+            return json.load(f)
+    except Exception:
+        return None
+
+
+def cmd_suggest_trades(args) -> None:
+    """Suggest 1-for-1 trades that improve your roster's positional balance."""
+    import asyncio
+    from sleeper.client import SleeperClient
+    from sleeper.enrichment.ktc import fetch_ktc_players
+
+    fmt = args.format
+    user, league = _resolve_league(args.username, args.league)
+    print(f"League: {league.name}")
+
+    rosters, sleeper_players = _fetch_roster_and_players(league.league_id)
+
+    async def _get_users():
+        async with SleeperClient() as client:
+            return await client.leagues.get_users(league.league_id)
+
+    league_users = asyncio.run(_get_users())
+    user_display: dict[str, str] = {}
+    for u in (league_users or []):
+        uid = str(u.user_id) if hasattr(u, "user_id") else ""
+        disp = u.display_name if hasattr(u, "display_name") else ""
+        if uid and disp:
+            user_display[uid] = disp
+
+    my_roster = next((r for r in rosters if r.owner_id == user.user_id), None)
+    if my_roster is None:
+        print(f"No roster found for '{args.username}' in {league.name}.")
+        sys.exit(1)
+
+    print("Fetching KTC values...")
+    ktc_players = fetch_ktc_players()
+    sleeper_to_ktc = _build_sleeper_to_ktc(ktc_players, sleeper_players)
+
+    pe_by_sid = {}
+    if args.with_pe:
+        try:
+            from sleeper.enrichment.stats import get_season_stats, HAS_NFLREADPY
+            if HAS_NFLREADPY:
+                from datetime import datetime
+                from sleeper.enrichment.ktc import build_ktc_to_sleeper_map
+                # Need sleeper_id on each KTCPlayer for the valuation join
+                ktc_to_sleeper = build_ktc_to_sleeper_map(ktc_players, sleeper_players)
+                for p in ktc_players:
+                    p.sleeper_id = ktc_to_sleeper.get(p.ktc_id)
+                print(f"Computing P/E ratios for {datetime.now().year}...")
+                stats = get_season_stats([datetime.now().year])
+                # Lazy-load valuation by file path to dodge analytics/__init__ chain
+                import importlib.util as _iu, sys as _sys
+                _vp = os.path.join(os.path.dirname(__file__), "analytics", "valuation.py")
+                _spec = _iu.spec_from_file_location("_sleeper_valuation_pe", _vp)
+                _val = _iu.module_from_spec(_spec)
+                _sys.modules["_sleeper_valuation_pe"] = _val
+                _spec.loader.exec_module(_val)
+                pes = _val.compute_pe_ratios(ktc_players, stats, seasons=[datetime.now().year], fmt=fmt)
+                pe_by_sid = {p.sleeper_id: p.pe_ratio for p in pes if p.sleeper_id and p.pe_ratio}
+        except Exception as e:
+            print(f"(P/E enrichment failed: {e}; continuing without)")
+
+    # Lazy-load trade_suggestions same way
+    import importlib.util as _iu, sys as _sys
+    _ts_path = os.path.join(os.path.dirname(__file__), "analytics", "trade_suggestions.py")
+    _spec = _iu.spec_from_file_location("_sleeper_trade_suggestions", _ts_path)
+    _ts = _iu.module_from_spec(_spec)
+    _sys.modules["_sleeper_trade_suggestions"] = _ts
+    _spec.loader.exec_module(_ts)
+
+    suggestions = _ts.suggest_trades(
+        my_roster=my_roster,
+        all_rosters=rosters,
+        sleeper_players=sleeper_players,
+        sleeper_to_ktc=sleeper_to_ktc,
+        user_display=user_display,
+        pe_by_sleeper_id=pe_by_sid,
+        fmt=fmt,
+        top=args.top,
+        max_per_partner=args.max_per_partner,
+        value_tolerance_pct=args.tolerance,
+        position_filter=args.position,
+    )
+
+    if not suggestions:
+        print("\nNo trades found at this tolerance. Try `--tolerance 15` or `--top 25`.")
+        return
+
+    headers = ["#", "Partner", "Send", "KTC", "Receive", "KTC", "ΔVal", "PE Δ", "Rationale"]
+    rows = []
+    for i, s in enumerate(suggestions, 1):
+        send = s.send_players[0]
+        recv = s.receive_players[0]
+        rows.append([
+            str(i),
+            s.to_owner[:18],
+            f"{send.name} ({send.position})",
+            f"{send.ktc_value:,}",
+            f"{recv.name} ({recv.position})",
+            f"{recv.ktc_value:,}",
+            f"{s.value_delta:+,}",
+            f"{s.pe_arbitrage:+.2f}" if s.pe_arbitrage else "-",
+            s.rationale[:60],
+        ])
+
+    print()
+    print(f"Trade Suggestions for {args.username} ({fmt.upper()})")
+    print()
+    print(_format_table(headers, rows))
+    print()
+    print(f"To send a suggestion: sleeper send-trade {args.username} --league \"{league.name}\" --suggestion N")
+
+    # Cache for send-trade --suggestion N
+    cache_path = _suggestion_cache_path(args.username, league.league_id)
+    cache_payload = {
+        "username": args.username,
+        "league_id": league.league_id,
+        "league_name": league.name,
+        "format": fmt,
+        "my_roster_id": my_roster.roster_id,
+        "saved_at": int(__import__("time").time()),
+        "suggestions": [
+            {
+                "to_roster_id": s.to_roster_id,
+                "to_owner": s.to_owner,
+                "send": [{"sleeper_id": p.sleeper_id, "name": p.name, "position": p.position,
+                          "team": p.team, "ktc_value": p.ktc_value} for p in s.send_players],
+                "receive": [{"sleeper_id": p.sleeper_id, "name": p.name, "position": p.position,
+                             "team": p.team, "ktc_value": p.ktc_value} for p in s.receive_players],
+                "value_delta": s.value_delta,
+                "rationale": s.rationale,
+            }
+            for s in suggestions
+        ],
+    }
+    _save_suggestions_cache(cache_path, cache_payload)
+
+
+def cmd_send_trade(args) -> None:
+    """Fire a propose_trade mutation against Sleeper. Always previews + asks for confirmation."""
+    import asyncio
+    import json as _json
+    import time as _time
+    from sleeper.auth.client import SleeperAuthClient, SleeperAuthError
+    from sleeper.client import SleeperClient
+
+    if not os.environ.get("SLEEPER_TOKEN"):
+        print("ERROR: SLEEPER_TOKEN env var not set.")
+        print("Capture it from sleeper.com DevTools -> Network -> graphql -> 'authorization' header.")
+        print("Then: export SLEEPER_TOKEN='eyJ...'")
+        sys.exit(1)
+
+    user, league = _resolve_league(args.username, args.league)
+
+    # Build adds/drops either from cached suggestion or explicit flags
+    adds: list[tuple[str, int]] = []
+    drops: list[tuple[str, int]] = []
+    preview_lines: list[str] = []
+    to_owner = ""
+    to_roster_id = 0
+
+    if args.suggestion is not None:
+        cache_path = _suggestion_cache_path(args.username, league.league_id)
+        cached = _load_suggestions_cache(cache_path)
+        if not cached:
+            print(f"No cached suggestions for {args.username} in {league.name}.")
+            print(f"Run `sleeper suggest-trades {args.username} --league \"{league.name}\"` first.")
+            sys.exit(1)
+        age_hr = (_time.time() - cached.get("saved_at", 0)) / 3600.0
+        if age_hr > 4:
+            print(f"WARNING: cached suggestions are {age_hr:.1f}h old. Consider re-running suggest-trades.")
+        sugs = cached.get("suggestions", [])
+        idx = args.suggestion - 1
+        if idx < 0 or idx >= len(sugs):
+            print(f"Suggestion #{args.suggestion} not found. Cache has {len(sugs)} suggestions.")
+            sys.exit(1)
+        chosen = sugs[idx]
+        to_roster_id = chosen["to_roster_id"]
+        to_owner = chosen["to_owner"]
+        my_roster_id = cached["my_roster_id"]
+        for p in chosen["send"]:
+            drops.append((p["sleeper_id"], my_roster_id))
+            adds.append((p["sleeper_id"], to_roster_id))
+            preview_lines.append(f"  YOU GIVE:  {p['name']} ({p['position']}, KTC {p['ktc_value']:,}) -> roster {to_roster_id} ({to_owner})")
+        for p in chosen["receive"]:
+            drops.append((p["sleeper_id"], to_roster_id))
+            adds.append((p["sleeper_id"], my_roster_id))
+            preview_lines.append(f"  YOU GET:   {p['name']} ({p['position']}, KTC {p['ktc_value']:,}) -> you (roster {my_roster_id})")
+        net_send = sum(p["ktc_value"] for p in chosen["send"])
+        net_recv = sum(p["ktc_value"] for p in chosen["receive"])
+        preview_lines.append(f"  NET:       {net_recv - net_send:+,} KTC")
+    else:
+        # Explicit mode: --to-roster N --send "Player A" --get "Player B"
+        if not args.to_roster or not args.send or not args.get:
+            print("Explicit mode needs --to-roster, --send, and --get (or use --suggestion N).")
+            sys.exit(1)
+        to_roster_id = args.to_roster
+        rosters, sleeper_players = _fetch_roster_and_players(league.league_id)
+        my_roster = next((r for r in rosters if r.owner_id == user.user_id), None)
+        if not my_roster:
+            print(f"No roster found for '{args.username}'.")
+            sys.exit(1)
+        their_roster = next((r for r in rosters if r.roster_id == to_roster_id), None)
+        if not their_roster:
+            print(f"No roster_id={to_roster_id} in this league.")
+            sys.exit(1)
+
+        async def _users():
+            async with SleeperClient() as c:
+                return await c.leagues.get_users(league.league_id)
+        lus = asyncio.run(_users())
+        udisp = {str(u.user_id): u.display_name for u in lus}
+        to_owner = udisp.get(str(their_roster.owner_id) or "", f"roster {to_roster_id}")
+
+        def resolve(name: str, roster, label: str):
+            n = name.lower().replace(".", "").replace("'", "").strip()
+            for pid in (roster.players or []):
+                sp = sleeper_players.get(pid)
+                if not sp:
+                    continue
+                full = (sp.full_name or "").lower().replace(".", "").replace("'", "")
+                if n in full:
+                    return pid, sp
+            print(f"ERROR: '{name}' not on {label}'s roster.")
+            print(f"  Available {label} players (top by name match):")
+            for pid in (roster.players or [])[:8]:
+                sp = sleeper_players.get(pid)
+                if sp:
+                    print(f"    {sp.full_name} ({sp.position})")
+            sys.exit(1)
+
+        for nm in args.send:
+            pid, sp = resolve(nm, my_roster, args.username)
+            from sleeper.enrichment.ktc import fetch_ktc_players
+            ktc = fetch_ktc_players()
+            s2k = _build_sleeper_to_ktc(ktc, sleeper_players)
+            ktc_p = s2k.get(pid)
+            val = _ktc_value(ktc_p, "sf")
+            drops.append((pid, my_roster.roster_id))
+            adds.append((pid, to_roster_id))
+            preview_lines.append(f"  YOU GIVE:  {sp.full_name} ({sp.position}, KTC {val:,}) -> roster {to_roster_id} ({to_owner})")
+        for nm in args.get:
+            pid, sp = resolve(nm, their_roster, to_owner)
+            from sleeper.enrichment.ktc import fetch_ktc_players
+            ktc = fetch_ktc_players()
+            s2k = _build_sleeper_to_ktc(ktc, sleeper_players)
+            ktc_p = s2k.get(pid)
+            val = _ktc_value(ktc_p, "sf")
+            drops.append((pid, to_roster_id))
+            adds.append((pid, my_roster.roster_id))
+            preview_lines.append(f"  YOU GET:   {sp.full_name} ({sp.position}, KTC {val:,}) -> you (roster {my_roster.roster_id})")
+
+    print()
+    print("=" * 70)
+    print("PROPOSED TRADE")
+    print("=" * 70)
+    print(f"  League: {league.name}")
+    print(f"  Partner: {to_owner} (roster {to_roster_id})")
+    print()
+    for line in preview_lines:
+        print(line)
+    print("=" * 70)
+
+    if args.yes:
+        print("(--yes flag: skipping confirmation)")
+    else:
+        if not sys.stdin.isatty():
+            print("\nERROR: not a TTY. Use --yes to confirm non-interactively.")
+            sys.exit(1)
+        try:
+            answer = input("\nSend this proposal? [y/N]: ").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            print("\nAborted.")
+            sys.exit(0)
+        if answer not in ("y", "yes"):
+            print("Aborted.")
+            sys.exit(0)
+
+    print("\nSending to Sleeper...")
+    try:
+        with SleeperAuthClient() as c:
+            result = c.propose_trade(
+                league_id=league.league_id,
+                adds=adds,
+                drops=drops,
+                draft_picks=[],
+                waiver_budget=[],
+                expires_at=None,
+            )
+    except SleeperAuthError as e:
+        print(f"\nERROR: {e}")
+        sys.exit(1)
+
+    print()
+    print(f"  Transaction ID: {result.get('transaction_id', '?')}")
+    print(f"  Status:         {result.get('status', '?')}")
+    print(f"  Created:        {result.get('created', '?')}")
+    print()
+    print("View it in Sleeper: https://sleeper.com/leagues/" + league.league_id + "/trades")
+
+
 # ---------------------------------------------------------------------------
 # Main / argparse
 # ---------------------------------------------------------------------------
@@ -955,6 +1279,37 @@ def main() -> None:
     pk.add_argument("--traded-only", action="store_true", dest="traded_only",
                     help="Show only traded picks")
 
+    # suggest-trades
+    st = subparsers.add_parser("suggest-trades",
+                               help="Suggest 1-for-1 trades that improve positional balance")
+    st.add_argument("username", help="Sleeper username")
+    st.add_argument("--league", help="League name filter")
+    st.add_argument("--format", choices=["sf", "1qb"], default="sf", help="Format (default: sf)")
+    st.add_argument("--top", type=int, default=10, help="Max suggestions to show (default: 10)")
+    st.add_argument("--max-per-partner", type=int, default=2, dest="max_per_partner",
+                    help="Max suggestions per trade partner (default: 2)")
+    st.add_argument("--tolerance", type=float, default=10.0,
+                    help="KTC value match tolerance percent (default: 10)")
+    st.add_argument("--position", help="Filter to suggestions involving this position (QB/RB/WR/TE)")
+    st.add_argument("--with-pe", action="store_true", dest="with_pe",
+                    help="Also compute P/E ratios for arbitrage scoring (slower; needs nflreadpy)")
+
+    # send-trade
+    sd = subparsers.add_parser("send-trade",
+                               help="Fire a propose_trade mutation against Sleeper (auth required)")
+    sd.add_argument("username", help="Sleeper username")
+    sd.add_argument("--league", help="League name filter")
+    sd.add_argument("--suggestion", type=int, default=None,
+                    help="Use suggestion #N from the last `suggest-trades` run for this user+league")
+    sd.add_argument("--to-roster", type=int, default=None, dest="to_roster",
+                    help="(explicit mode) target roster_id")
+    sd.add_argument("--send", nargs="+", default=None,
+                    help="(explicit mode) player names you give up")
+    sd.add_argument("--get", nargs="+", default=None,
+                    help="(explicit mode) player names you receive")
+    sd.add_argument("--yes", action="store_true",
+                    help="Skip the confirmation prompt (still prints preview)")
+
     args = parser.parse_args()
     if args.command is None:
         parser.print_help()
@@ -978,6 +1333,10 @@ def main() -> None:
         cmd_pe_ratio(args)
     elif args.command == "ktc-trend":
         cmd_ktc_trend(args)
+    elif args.command == "suggest-trades":
+        cmd_suggest_trades(args)
+    elif args.command == "send-trade":
+        cmd_send_trade(args)
 
 
 if __name__ == "__main__":

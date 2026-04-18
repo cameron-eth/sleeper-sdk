@@ -132,6 +132,116 @@ for t in report.best_trades[:3]:
 | `analytics.matchups` | `get_head_to_head`, `get_closest_games`, `get_highest_scoring_weeks` |
 | `analytics.trades` | `get_transaction_summary`, `get_most_traded_players`, `get_trade_partners`, `get_waiver_activity` |
 | `analytics.rosters` | `get_roster_composition`, `get_player_to_team_map` |
+| `analytics.valuation` | `compute_pe_ratios` — Price-to-Earnings ratio (KTC value vs real FFPG) |
+
+### Valuation — P/E Ratio
+
+Borrowing from finance: **Price** = KTC value, **Earnings** = fantasy points per game. Normalized against the positional median so QB/RB/WR/TE are comparable.
+
+```
+price_multiple    = ktc_value / positional_median_ktc
+earnings_multiple = ffpg      / positional_median_ffpg
+pe_ratio          = price_multiple / earnings_multiple
+```
+
+| PE | Meaning |
+|------|---------|
+| `< 0.7` | **Undervalued** — production exceeds price (buy) |
+| `~ 1.0` | Fair |
+| `> 1.5` | **Overvalued** — paying for hype (sell) |
+| `None`  | Speculative — no production sample yet |
+
+```python
+from sleeper.analytics.valuation import compute_pe_ratios
+from sleeper.enrichment.ktc import fetch_ktc_players, build_ktc_to_sleeper_map
+from sleeper.enrichment.stats import get_season_stats
+
+ktc = fetch_ktc_players()
+# attach sleeper_ids so the join to stats works
+mapping = build_ktc_to_sleeper_map(ktc, sleeper_players)
+for p in ktc:
+    p.sleeper_id = mapping.get(p.ktc_id)
+
+stats = get_season_stats([2025])
+pes = compute_pe_ratios(ktc, stats, seasons=[2025], fmt="sf")
+buys = [r for r in pes if r.signal == "undervalued"][:15]
+```
+
+## CLI
+
+Installed as the `sleeper` entry point (or run via `python -m sleeper.cli`).
+
+```bash
+python -m sleeper.cli <command> [options]
+```
+
+| Command | Purpose |
+|---------|---------|
+| `market-value "Player Name"` | KTC listed value vs median actual trade price |
+| `league-values <user>` | KTC values for every player on your roster |
+| `roster-rank <user>` | Rank all teams in a league by total KTC value |
+| `trade-check --give ... --get ...` | Evaluate a proposed trade |
+| `trending` | Biggest 7-day KTC movers (up / down / both) |
+| `buy-sell buy\|sell` | Players trading below / above their KTC value |
+| `picks <user>` | Future pick assets across the league |
+| `pe-ratio` | Price-to-Earnings ratio — KTC price vs real FFPG |
+| `suggest-trades <user>` | 1-for-1 trades that improve your roster's positional balance |
+| `send-trade <user>` | Fire a `propose_trade` mutation against Sleeper (auth required) |
+
+### Suggest → Send workflow
+
+`suggest-trades` finds 1-for-1 swaps where you have positional surplus and a partner has the position you need (and vice versa), bounded by KTC value parity. Each suggestion is numbered and cached locally so you can fire it with `send-trade --suggestion N`.
+
+```bash
+# 1. Find good trades
+python -m sleeper.cli suggest-trades camfleety --league "Meat Market" --top 10
+
+# 2. (Optional) Increase tolerance to broaden matches
+python -m sleeper.cli suggest-trades camfleety --league "Meat Market" --tolerance 15 --position WR
+
+# 3. Preview + send suggestion #2 (asks y/N before firing)
+SLEEPER_TOKEN='eyJ...' python -m sleeper.cli send-trade camfleety --league "Meat Market" --suggestion 2
+
+# Or send explicitly without going through suggest-trades:
+python -m sleeper.cli send-trade camfleety --league "Meat Market" \
+    --to-roster 8 --send "Will Levis" --get "Jerome Ford"
+```
+
+`send-trade` always prints a preview table before sending. Without `--yes` it requires interactive confirmation (`y` to send). With `--yes` it still prints the preview but skips the prompt — use that for scripted/agent workflows.
+
+**`SLEEPER_TOKEN`** must be set for `send-trade`. Capture it once from sleeper.com DevTools → Network → any `graphql` request → `authorization` header. The SDK reads it from the env var only — it is never logged or stored.
+
+### `pe-ratio` — flag reference
+
+```bash
+python -m sleeper.cli pe-ratio \
+    --format sf \
+    --seasons 2025 \
+    --position WR \
+    --max-age 27 \
+    --min-ppg 8 \
+    --min-ktc 2500 \
+    --exclude-speculative \
+    --top 20 \
+    --sort pe
+```
+
+| Flag | Default | Purpose |
+|------|---------|---------|
+| `--format` | `sf` | `sf` or `1qb` |
+| `--seasons` | current year | Comma-separated years (e.g. `2024,2025`) |
+| `--scoring` | `ppr` | `ppr` or `standard` |
+| `--position` | all | `QB`, `RB`, `WR`, `TE` |
+| `--min-games` | `4` | Below this a player is marked speculative |
+| `--max-age` | none | Cap age for dynasty targets (e.g. `26`) |
+| `--min-age` | none | Floor age |
+| `--min-ppg` | none | Filter out low-production noise |
+| `--min-ktc` | none | Filter out deep bench |
+| `--exclude-speculative` | false | Hide rookies / IR with no sample |
+| `--top` | `25` | Row limit |
+| `--sort` | `pe` | `pe`, `pe-desc`, `value`, `ffpg` |
+
+Requires the `nfl-data` extra (`pip install 'sleeper-sdk[nfl-data]'`) for live NFL stats via `nflreadpy`.
 
 ## Examples
 
