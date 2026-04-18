@@ -1013,6 +1013,163 @@ def cmd_suggest_trades(args) -> None:
     _save_suggestions_cache(cache_path, cache_payload)
 
 
+def cmd_gm_mode(args) -> None:
+    """GM Mode: full team archetype analysis with strategic recommendations."""
+    import asyncio
+    from sleeper.client import SleeperClient
+    from sleeper.enrichment.ktc import fetch_ktc_players
+
+    user, league = _resolve_league(args.username, args.league)
+    print(f"League: {league.name}")
+    rosters, sleeper_players = _fetch_roster_and_players(league.league_id)
+
+    async def _get_users_and_picks():
+        async with SleeperClient() as client:
+            users = await client.leagues.get_users(league.league_id)
+            try:
+                picks = await client.leagues.get_traded_picks(league.league_id)
+            except Exception:
+                picks = []
+            return users, picks
+
+    league_users, traded_picks = asyncio.run(_get_users_and_picks())
+    user_display: dict[str, str] = {}
+    for u in (league_users or []):
+        uid = str(u.user_id) if hasattr(u, "user_id") else ""
+        disp = u.display_name if hasattr(u, "display_name") else ""
+        if uid and disp:
+            user_display[uid] = disp
+
+    # Find target roster (by username, or --owner override for another team)
+    target_user_id = user.user_id
+    if args.owner and args.owner != args.username:
+        for uid, disp in user_display.items():
+            if disp.lower() == args.owner.lower():
+                target_user_id = uid
+                break
+
+    my_roster = next((r for r in rosters if str(r.owner_id) == str(target_user_id)), None)
+    if my_roster is None:
+        print(f"No roster found for '{args.owner or args.username}' in {league.name}.")
+        sys.exit(1)
+
+    print("Fetching KTC values...")
+    ktc_players = fetch_ktc_players()
+    sleeper_to_ktc = _build_sleeper_to_ktc(ktc_players, sleeper_players)
+
+    # Pick capital is approximated from traded picks (rough; a future enhancement is to
+    # pull the full draft-pick list from Sleeper and value each with KTC pick values)
+    pick_capital = 0
+
+    # Production rank from roster settings (fpts)
+    production_rank = None
+    record_str = None
+    try:
+        roster_records = []
+        for r in rosters:
+            wins = getattr(r.settings, "wins", 0) if r.settings else 0
+            losses = getattr(r.settings, "losses", 0) if r.settings else 0
+            pf = getattr(r.settings, "fpts", 0) if r.settings else 0
+            roster_records.append((r.roster_id, wins, losses, pf))
+        roster_records.sort(key=lambda x: -x[3])
+        for i, rec in enumerate(roster_records):
+            if rec[0] == my_roster.roster_id:
+                production_rank = i + 1
+                record_str = f"{rec[1]}-{rec[2]}"
+                break
+    except Exception:
+        pass
+
+    # Lazy-load gm_mode module
+    import importlib.util as _iu, sys as _sys
+    _gm_path = os.path.join(os.path.dirname(__file__), "analytics", "gm_mode.py")
+    _spec = _iu.spec_from_file_location("_sleeper_gm_mode", _gm_path)
+    _gm = _iu.module_from_spec(_spec)
+    _sys.modules["_sleeper_gm_mode"] = _gm
+    _spec.loader.exec_module(_gm)
+
+    report = _gm.generate_gm_report(
+        my_roster=my_roster,
+        all_rosters=rosters,
+        sleeper_players=sleeper_players,
+        sleeper_to_ktc=sleeper_to_ktc,
+        user_display=user_display,
+        production_rank=production_rank,
+        record_str=record_str,
+        pick_capital=pick_capital,
+        fmt=args.format,
+    )
+
+    arch = report.archetype
+    print()
+    print("=" * 78)
+    print(f"  GM MODE REPORT — {arch.owner} ({league.name})")
+    print("=" * 78)
+    print()
+    print(f"  ARCHETYPE:      {arch.archetype}   (confidence {arch.confidence*100:.0f}%)")
+    print(f"  REASONING:      {arch.reasoning}")
+    print()
+    print(f"  Total Value:    {arch.total_ktc_value:,} KTC  (rank {arch.value_rank} of {report.league_context['size']})")
+    if arch.production_rank:
+        print(f"  Production:     rank {arch.production_rank} of {report.league_context['size']}  ({arch.record_str})")
+    if arch.avg_starter_age:
+        print(f"  Starter Age:    {arch.avg_starter_age:.1f} avg")
+    if arch.young_asset_pct is not None:
+        print(f"  Young Value:    {arch.young_asset_pct*100:.0f}% from players under 26")
+    print()
+
+    print("-" * 78)
+    print("  POSITIONAL BREAKDOWN")
+    print("-" * 78)
+    print(f"  {'Pos':<5} {'Starters':>10} {'Bench':>10} {'Total':>10} {'Lg Avg':>12} {'Rank':>6} {'Strength':>10} {'Depth':>8}")
+    for p in arch.positions:
+        strength_tag = "STRONG" if p.strength_score >= 0.4 else ("WEAK" if p.strength_score <= -0.4 else "AVG")
+        depth_tag = "DEEP" if p.depth_score >= 0.3 else ("SHALLOW" if p.depth_score <= -0.3 else "AVG")
+        print(f"  {p.position:<5} {p.starters_value:>10,} {p.bench_value:>10,} {p.total_value:>10,} "
+              f"{p.league_avg_total:>12,} {p.rank:>6} {strength_tag:>10} {depth_tag:>8}")
+    print()
+
+    if arch.strengths:
+        print(f"  STRENGTHS:      {', '.join(arch.strengths)}")
+    if arch.weaknesses:
+        print(f"  WEAKNESSES:     {', '.join(arch.weaknesses)}")
+    print()
+
+    print("-" * 78)
+    print("  TOP 5 ASSETS")
+    print("-" * 78)
+    for p in report.top_assets:
+        age_str = f"age {p['age']:.0f}" if p["age"] else "age N/A"
+        print(f"  {p['name']:<25} {p['position']:<3} {p['team']:<4} KTC {p['ktc']:>6,}  ({age_str})")
+    print()
+
+    if report.liabilities:
+        print("-" * 78)
+        print("  LIABILITIES (high-value aging players)")
+        print("-" * 78)
+        for p in report.liabilities:
+            print(f"  {p['name']:<25} {p['position']:<3} KTC {p['ktc']:>6,}  (age {p['age']:.0f})")
+        print()
+
+    print("-" * 78)
+    print("  STRATEGIC RECOMMENDATION")
+    print("-" * 78)
+    print(f"  {arch.trade_strategy}")
+    print()
+
+    if report.targets:
+        print("  TRADE TARGETS:")
+        for t in report.targets:
+            print(f"    - {t['type']}: {t['description']}")
+        print()
+
+    print("=" * 78)
+    print(f"  Next steps:")
+    print(f"    sleeper find-trades {args.username} --league \"{league.name}\"")
+    print(f"    sleeper suggest-trades {args.username} --league \"{league.name}\"")
+    print("=" * 78)
+
+
 def cmd_find_trades(args) -> None:
     """Find trades targeting specific positions, with include/exclude filters.
 
@@ -1485,6 +1642,14 @@ def main() -> None:
     st.add_argument("--with-pe", action="store_true", dest="with_pe",
                     help="Also compute P/E ratios for arbitrage scoring (slower; needs nflreadpy)")
 
+    # gm-mode
+    gm = subparsers.add_parser("gm-mode",
+                               help="Full team archetype analysis (contender/reloading/rebuilding/pretender)")
+    gm.add_argument("username", help="Sleeper username (authed user)")
+    gm.add_argument("--league", help="League name filter")
+    gm.add_argument("--owner", help="Analyze another owner in the same league (by display name)")
+    gm.add_argument("--format", choices=["sf", "1qb"], default="sf", help="Format (default: sf)")
+
     # find-trades
     ft = subparsers.add_parser("find-trades",
                                help="Find trades targeting specific positions with filters")
@@ -1554,6 +1719,8 @@ def main() -> None:
         cmd_find_trades(args)
     elif args.command == "send-trade":
         cmd_send_trade(args)
+    elif args.command == "gm-mode":
+        cmd_gm_mode(args)
 
 
 if __name__ == "__main__":

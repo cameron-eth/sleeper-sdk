@@ -189,6 +189,7 @@ python -m sleeper.cli <command> [options]
 | `suggest-trades <user>` | 1-for-1 trades that improve your roster's positional balance |
 | `find-trades <user>` | Flexible trade finder with position, include/exclude, and mode filters |
 | `send-trade <user>` | Fire a `propose_trade` mutation against Sleeper (auth required) |
+| `gm-mode <user>` | Full archetype report: CONTENDER / RELOADING / REBUILDING / PRETENDER |
 
 ### Suggest → Send workflow
 
@@ -282,6 +283,26 @@ python -m sleeper.cli find-trades camfleety --league "Meat Market" \
 | `--single-only` | false | Only single-player trades (don't combine assets) |
 
 The command combines your highest-value chips (QBs, WRs, TEs) to match target players. Trades are scored by target value and overpay balance.
+
+### `gm-mode` — Team Archetype Analysis
+
+Classifies your team and tells you how to build accordingly. Pulls total KTC (players + picks) vs league, compares against production rank, factors in roster age and youth-weighted value, then emits one of four archetypes with strategic recommendations.
+
+Archetypes:
+- **CONTENDER** — top-tier value + winning now → close gaps, lock in
+- **RELOADING** — mid-tier value retooling for a window → selective upgrades
+- **REBUILDING** — bottom-tier or young-heavy → accumulate picks/youth
+- **PRETENDER** — 3rd-6th in value BUT 6th-9th in production AND older roster → urgent sell-off
+
+```bash
+# Your team
+python -m sleeper.cli gm-mode camfleety --league "Meat Market" --format sf
+
+# Scout another owner in the same league
+python -m sleeper.cli gm-mode camfleety --league "Meat Market" --owner someone_else
+```
+
+Output includes positional strength/depth table, top 5 assets, aging liabilities, and archetype-specific buy/sell targets. Chain with `find-trades --mode upgrade|downtiering` based on the recommendation.
 
 ## Examples
 
