@@ -38,6 +38,10 @@ class TradeSuggestion:
     send_value: int = 0
     receive_value: int = 0
     value_delta: int = 0
+    # KTC-style Value Adjustment (stud side bonus for lopsided count). For
+    # 1-for-1 suggestions this is always 0 — populated for forward-compat.
+    value_adjustment: int = 0
+    adjusted_delta: int = 0
     your_position_help: dict[str, int] = field(default_factory=dict)
     their_position_help: dict[str, int] = field(default_factory=dict)
     pe_arbitrage: float = 0.0
@@ -208,6 +212,14 @@ def suggest_trades(
                         f"Them: {receive_pos} surplus->balanced."
                     )
 
+                    # Value adjustment (will be 0 for 1-for-1, but include for
+                    # forward-compat when multi-player packages are added)
+                    from sleeper.analytics.value_adjustment import apply_adjustment_to_delta
+                    adj_delta, adj = apply_adjustment_to_delta(
+                        raw_delta=delta,
+                        send_values=[send_p.ktc_value],
+                        receive_values=[receive_p.ktc_value],
+                    )
                     sug = TradeSuggestion(
                         from_roster_id=my_roster.roster_id,
                         from_owner=user_display.get(str(my_roster.owner_id) or "", "you"),
@@ -218,6 +230,8 @@ def suggest_trades(
                         send_value=send_p.ktc_value,
                         receive_value=receive_p.ktc_value,
                         value_delta=delta,
+                        value_adjustment=adj.adjustment,
+                        adjusted_delta=adj_delta,
                         your_position_help=your_help,
                         their_position_help=their_help,
                         pe_arbitrage=pe_gain,
@@ -226,9 +240,9 @@ def suggest_trades(
                     partner_suggestions.append(sug)
 
         # Rank within partner: value_delta then pe_arbitrage
-        partner_suggestions.sort(key=lambda s: (-s.value_delta, -s.pe_arbitrage))
+        partner_suggestions.sort(key=lambda s: (-s.adjusted_delta, -s.pe_arbitrage))
         suggestions.extend(partner_suggestions[:max_per_partner])
 
     # Global rank
-    suggestions.sort(key=lambda s: (-s.value_delta, -s.pe_arbitrage))
+    suggestions.sort(key=lambda s: (-s.adjusted_delta, -s.pe_arbitrage))
     return suggestions[:top]

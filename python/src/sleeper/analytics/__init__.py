@@ -69,3 +69,8 @@ from sleeper.analytics.gm_mode import (
     TeamArchetype,
     PositionBreakdown,
 )
+from sleeper.analytics.value_adjustment import (
+    compute_value_adjustment,
+    apply_adjustment_to_delta,
+    ValueAdjustment,
+)

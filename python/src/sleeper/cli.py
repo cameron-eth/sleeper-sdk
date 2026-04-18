@@ -347,17 +347,30 @@ def cmd_trade_check(args: argparse.Namespace) -> None:
     print(_format_table(headers_side, get_rows) if get_rows else "  (none)")
     print(f"  Subtotal: {get_total:,}")
     print()
-    print(f"Net Difference:  {diff:+,}  ({pct:.1f}% of give side)" if pct else f"Net Difference:  {diff:+,}")
+    print(f"Raw Net Difference:  {diff:+,}  ({pct:.1f}% of give side)" if pct else f"Raw Net Difference:  {diff:+,}")
+
+    # Apply KTC-style value adjustment
+    from sleeper.analytics.value_adjustment import apply_adjustment_to_delta
+    give_vals = [_ktc_value(p, fmt) for p in give_found]
+    get_vals = [_ktc_value(p, fmt) for p in get_found]
+    adjusted_diff, adj = apply_adjustment_to_delta(diff, give_vals, get_vals)
+
+    if adj.adjustment > 0:
+        print(f"Value Adjustment:    {adj.adjustment:+,} KTC  (favors {adj.favors} side — {adj.stud_tier} stud tier)")
+        print(f"  └─ {adj.rationale}")
+        print(f"Adjusted Net:        {adjusted_diff:+,}")
     print()
 
-    if diff > 500:
-        verdict = "WIN  — you gain significant value"
-    elif diff > 0:
-        verdict = "SLIGHT WIN — you gain minor value"
-    elif diff > -500:
-        verdict = "SLIGHT LOSS — you give up minor value"
+    # Use adjusted_diff for the final verdict
+    final = adjusted_diff
+    if final > 500:
+        verdict = "WIN  — you gain significant value (after Value Adjustment)"
+    elif final > 0:
+        verdict = "SLIGHT WIN — you gain minor value (after Value Adjustment)"
+    elif final > -500:
+        verdict = "SLIGHT LOSS — you give up minor value (after Value Adjustment)"
     else:
-        verdict = "LOSS — you give up significant value"
+        verdict = "LOSS — you give up significant value (after Value Adjustment)"
 
     print(f"Verdict: {verdict}")
 
@@ -963,11 +976,12 @@ def cmd_suggest_trades(args) -> None:
         print("\nNo trades found at this tolerance. Try `--tolerance 15` or `--top 25`.")
         return
 
-    headers = ["#", "Partner", "Send", "KTC", "Receive", "KTC", "ΔVal", "PE Δ", "Rationale"]
+    headers = ["#", "Partner", "Send", "KTC", "Receive", "KTC", "Raw Δ", "Val Adj", "Adj Δ", "PE Δ", "Rationale"]
     rows = []
     for i, s in enumerate(suggestions, 1):
         send = s.send_players[0]
         recv = s.receive_players[0]
+        val_adj_display = f"{s.value_adjustment:+,}" if s.value_adjustment else "0"
         rows.append([
             str(i),
             s.to_owner[:18],
@@ -976,8 +990,10 @@ def cmd_suggest_trades(args) -> None:
             f"{recv.name} ({recv.position})",
             f"{recv.ktc_value:,}",
             f"{s.value_delta:+,}",
+            val_adj_display,
+            f"{s.adjusted_delta:+,}",
             f"{s.pe_arbitrage:+.2f}" if s.pe_arbitrage else "-",
-            s.rationale[:60],
+            s.rationale[:55],
         ])
 
     print()
@@ -1300,16 +1316,21 @@ def cmd_find_trades(args) -> None:
     my_chips.sort(key=lambda x: -x["ktc"])
 
     # Find trades: target player vs combinations of my chips
+    from sleeper.analytics.value_adjustment import compute_value_adjustment
+
     trades = []
     for target in trade_targets:
-        # Single chip
+        # Single chip (1-for-1: no value adjustment needed, count is equal)
         for chip in my_chips:
             overpay = chip["ktc"] - target["ktc"]
             if args.min_overpay <= overpay <= args.max_overpay:
+                adj = compute_value_adjustment([chip["ktc"]], [target["ktc"]])
                 trades.append({
                     "target": target,
                     "chips": [chip],
                     "overpay": overpay,
+                    "adj": adj,
+                    "adjusted_overpay": overpay,  # 1-for-1 has 0 adjustment
                     "score": target["ktc"] * 1.5,
                 })
 
@@ -1319,12 +1340,28 @@ def cmd_find_trades(args) -> None:
                 for chip2 in my_chips[i+1:]:
                     total = chip1["ktc"] + chip2["ktc"]
                     overpay = total - target["ktc"]
-                    if args.min_overpay <= overpay <= args.max_overpay:
+                    # Value adjustment: sending 2 chips for 1 target means we give
+                    # up a roster spot. If target is a stud, we owe *less* overpay
+                    # in effective terms (stud side gets credit). From our POV as
+                    # the multi-sender, favors="receive" (we're getting the stud),
+                    # so effective cost to us is HIGHER.
+                    adj = compute_value_adjustment(
+                        send_values=[chip1["ktc"], chip2["ktc"]],
+                        receive_values=[target["ktc"]],
+                    )
+                    # adjusted_overpay = raw_overpay + adj (we pay more when they
+                    # have the stud). Cast to positive adjustment on our overpay.
+                    adjusted_overpay = overpay + (adj.adjustment if adj.favors == "receive" else -adj.adjustment)
+                    if args.min_overpay <= adjusted_overpay <= args.max_overpay:
                         trades.append({
                             "target": target,
                             "chips": [chip1, chip2],
                             "overpay": overpay,
-                            "score": target["ktc"] * 1.5 - overpay * 0.3,
+                            "adj": adj,
+                            "adjusted_overpay": adjusted_overpay,
+                            # Score using the ADJUSTED overpay so value-adjustment
+                            # pushes lopsided-but-unfair trades down the list.
+                            "score": target["ktc"] * 1.5 - adjusted_overpay * 0.3,
                         })
 
     if not trades:
@@ -1333,14 +1370,22 @@ def cmd_find_trades(args) -> None:
 
     trades.sort(key=lambda t: -t["score"])
 
-    # Display results
-    headers = ["#", "Partner", "Target", "Pos", "KTC", "You Give", "Total KTC", "Δ Value", "Δ %"]
+    # Display results (now with Value Adjustment column)
+    headers = ["#", "Partner", "Target", "Pos", "KTC", "You Give", "Total KTC", "Raw Δ", "Val Adj", "Adj Δ"]
     rows = []
     for i, trade in enumerate(trades[:args.top], 1):
         target = trade["target"]
         chips_str = " + ".join(c["name"] for c in trade["chips"])
         chips_ktc = sum(c["ktc"] for c in trade["chips"])
-        pct = (trade["overpay"] / target["ktc"]) * 100
+        adj = trade["adj"]
+        # Display adjustment from the stud side's perspective (always positive)
+        # Show sign based on who it favors relative to you (the sender).
+        if adj.favors == "receive":
+            adj_display = f"+{adj.adjustment:,}"   # you owe more (they have stud)
+        elif adj.favors == "send":
+            adj_display = f"-{adj.adjustment:,}"   # you're owed more (you have stud)
+        else:
+            adj_display = "0"
         rows.append([
             str(i),
             target["owner"][:15],
@@ -1350,7 +1395,8 @@ def cmd_find_trades(args) -> None:
             chips_str[:30],
             f"{chips_ktc:,}",
             f"{trade['overpay']:+,}",
-            f"{pct:+.1f}%",
+            adj_display,
+            f"{trade['adjusted_overpay']:+,}",
         ])
 
     print()
@@ -1369,7 +1415,7 @@ def cmd_send_trade(args) -> None:
     from sleeper.auth.client import SleeperAuthClient, SleeperAuthError
     from sleeper.client import SleeperClient
 
-    if not os.environ.get("SLEEPER_TOKEN"):
+    if not os.environ.get("SLEEPER_TOKEN") and not getattr(args, "dry_run", False):
         print("ERROR: SLEEPER_TOKEN env var not set.")
         print("Capture it from sleeper.com DevTools -> Network -> graphql -> 'authorization' header.")
         print("Then: export SLEEPER_TOKEN='eyJ...'")
@@ -1383,6 +1429,12 @@ def cmd_send_trade(args) -> None:
     preview_lines: list[str] = []
     to_owner = ""
     to_roster_id = 0
+    # Track per-side KTC values for Value Adjustment preview
+    send_values_for_adj: list[int] = []
+    receive_values_for_adj: list[int] = []
+    # Track per-side player metadata for dry-run (P/E lookup)
+    send_players_meta: list[dict] = []     # [{sleeper_id, name, position, ktc}]
+    receive_players_meta: list[dict] = []
 
     if args.suggestion is not None:
         cache_path = _suggestion_cache_path(args.username, league.league_id)
@@ -1406,14 +1458,18 @@ def cmd_send_trade(args) -> None:
         for p in chosen["send"]:
             drops.append((p["sleeper_id"], my_roster_id))
             adds.append((p["sleeper_id"], to_roster_id))
+            send_values_for_adj.append(p["ktc_value"])
+            send_players_meta.append({"sleeper_id": p["sleeper_id"], "name": p["name"], "position": p["position"], "ktc": p["ktc_value"]})
             preview_lines.append(f"  YOU GIVE:  {p['name']} ({p['position']}, KTC {p['ktc_value']:,}) -> roster {to_roster_id} ({to_owner})")
         for p in chosen["receive"]:
             drops.append((p["sleeper_id"], to_roster_id))
             adds.append((p["sleeper_id"], my_roster_id))
+            receive_values_for_adj.append(p["ktc_value"])
+            receive_players_meta.append({"sleeper_id": p["sleeper_id"], "name": p["name"], "position": p["position"], "ktc": p["ktc_value"]})
             preview_lines.append(f"  YOU GET:   {p['name']} ({p['position']}, KTC {p['ktc_value']:,}) -> you (roster {my_roster_id})")
         net_send = sum(p["ktc_value"] for p in chosen["send"])
         net_recv = sum(p["ktc_value"] for p in chosen["receive"])
-        preview_lines.append(f"  NET:       {net_recv - net_send:+,} KTC")
+        preview_lines.append(f"  NET:       {net_recv - net_send:+,} KTC (raw)")
     else:
         # Explicit mode: --to-roster N --send "Player A" --get "Player B"
         if not args.to_roster or not args.send or not args.get:
@@ -1463,6 +1519,8 @@ def cmd_send_trade(args) -> None:
             val = _ktc_value(ktc_p, "sf")
             drops.append((pid, my_roster.roster_id))
             adds.append((pid, to_roster_id))
+            send_values_for_adj.append(val)
+            send_players_meta.append({"sleeper_id": pid, "name": sp.full_name, "position": sp.position, "ktc": val})
             preview_lines.append(f"  YOU GIVE:  {sp.full_name} ({sp.position}, KTC {val:,}) -> roster {to_roster_id} ({to_owner})")
         for nm in args.get:
             pid, sp = resolve(nm, their_roster, to_owner)
@@ -1473,6 +1531,8 @@ def cmd_send_trade(args) -> None:
             val = _ktc_value(ktc_p, "sf")
             drops.append((pid, to_roster_id))
             adds.append((pid, my_roster.roster_id))
+            receive_values_for_adj.append(val)
+            receive_players_meta.append({"sleeper_id": pid, "name": sp.full_name, "position": sp.position, "ktc": val})
             preview_lines.append(f"  YOU GET:   {sp.full_name} ({sp.position}, KTC {val:,}) -> you (roster {my_roster.roster_id})")
 
     print()
@@ -1484,7 +1544,123 @@ def cmd_send_trade(args) -> None:
     print()
     for line in preview_lines:
         print(line)
+
+    # Value Adjustment preview
+    raw_delta = 0
+    adj_delta = 0
+    adj = None
+    if send_values_for_adj and receive_values_for_adj:
+        from sleeper.analytics.value_adjustment import apply_adjustment_to_delta
+        raw_delta = sum(receive_values_for_adj) - sum(send_values_for_adj)
+        adj_delta, adj = apply_adjustment_to_delta(raw_delta, send_values_for_adj, receive_values_for_adj)
+        if adj.adjustment > 0:
+            print(f"  VAL ADJ:   {adj.adjustment:+,} KTC (favors {adj.favors} side — {adj.stud_tier} stud)")
+            print(f"             {adj.rationale}")
+            print(f"  ADJUSTED:  {adj_delta:+,} KTC")
     print("=" * 70)
+
+    # --dry-run: show winner/loser on KTC + P/E and exit
+    if getattr(args, "dry_run", False):
+        print()
+        print("=" * 70)
+        print("DRY RUN — KTC + P/E WINNER / LOSER ANALYSIS")
+        print("=" * 70)
+
+        # KTC verdict
+        send_ktc_total = sum(send_values_for_adj)
+        recv_ktc_total = sum(receive_values_for_adj)
+        print(f"\n  KTC:")
+        print(f"    You send:    {send_ktc_total:,}")
+        print(f"    You receive: {recv_ktc_total:,}")
+        print(f"    Raw delta:   {raw_delta:+,}")
+        if adj and adj.adjustment > 0:
+            print(f"    + Val Adj:   {adj_delta:+,} (after {adj.stud_tier}-tier stud compensation)")
+        final_ktc = adj_delta if (adj and adj.adjustment > 0) else raw_delta
+        if final_ktc > 500:
+            print(f"    KTC Winner:  YOU ({final_ktc:+,})")
+        elif final_ktc < -500:
+            print(f"    KTC Winner:  PARTNER ({final_ktc:+,})")
+        else:
+            print(f"    KTC Verdict: EVEN ({final_ktc:+,})")
+
+        # P/E verdict — compute on the fly from KTC + stats
+        print(f"\n  P/E RATIO:")
+        try:
+            import datetime as _dt
+            from sleeper.enrichment.ktc import fetch_ktc_players, build_ktc_to_sleeper_map
+            from sleeper.enrichment.stats import get_season_stats
+            from sleeper.analytics.valuation import compute_pe_ratios
+            ktc_all = fetch_ktc_players()
+            if 'sleeper_players' not in dir():
+                _, _sp = _fetch_roster_and_players(league.league_id)
+            else:
+                _sp = sleeper_players
+            mapping = build_ktc_to_sleeper_map(ktc_all, _sp)
+            for p in ktc_all:
+                p.sleeper_id = mapping.get(p.ktc_id)
+            year = _dt.date.today().year
+            stats = None
+            # Try current year, fall back to last completed season
+            for y in [year - 1, year - 2]:
+                try:
+                    stats = get_season_stats([y])
+                    if stats:
+                        year = y
+                        break
+                except Exception:
+                    continue
+            if not stats:
+                raise RuntimeError("no recent NFL stats available")
+            pes = compute_pe_ratios(ktc_all, stats, seasons=[year], fmt="sf")
+            pe_by_sid = {r.sleeper_id: r for r in pes if r.sleeper_id}
+
+            def _pe_line(p: dict, direction: str) -> None:
+                r = pe_by_sid.get(p["sleeper_id"])
+                if r and r.pe_ratio is not None:
+                    signal = r.signal.upper() if r.signal else "-"
+                    print(f"    {direction}  {p['name']:<22} {p['position']:<3} PE={r.pe_ratio:.2f}  FFPG={r.ffpg:.1f}  [{signal}]")
+                else:
+                    print(f"    {direction}  {p['name']:<22} {p['position']:<3} PE=?  (no production sample)")
+
+            send_pe_sum = 0.0
+            recv_pe_sum = 0.0
+            send_pe_count = 0
+            recv_pe_count = 0
+            for p in send_players_meta:
+                _pe_line(p, "SEND   ")
+                r = pe_by_sid.get(p["sleeper_id"])
+                if r and r.pe_ratio is not None:
+                    send_pe_sum += r.pe_ratio
+                    send_pe_count += 1
+            for p in receive_players_meta:
+                _pe_line(p, "RECEIVE")
+                r = pe_by_sid.get(p["sleeper_id"])
+                if r and r.pe_ratio is not None:
+                    recv_pe_sum += r.pe_ratio
+                    recv_pe_count += 1
+
+            if send_pe_count and recv_pe_count:
+                avg_send = send_pe_sum / send_pe_count
+                avg_recv = recv_pe_sum / recv_pe_count
+                pe_delta = avg_send - avg_recv  # positive = you're sending higher PE (overpriced) = win
+                print(f"\n    Avg PE sent:     {avg_send:.2f}  (lower = more undervalued)")
+                print(f"    Avg PE received: {avg_recv:.2f}")
+                print(f"    PE delta:        {pe_delta:+.2f}")
+                if pe_delta > 0.15:
+                    print(f"    P/E Winner:      YOU — receiving cheaper production per KTC")
+                elif pe_delta < -0.15:
+                    print(f"    P/E Winner:      PARTNER — you're paying hype premium")
+                else:
+                    print(f"    P/E Verdict:     EVEN on production vs price")
+            else:
+                print(f"    (insufficient production sample — at least one side is speculative)")
+        except Exception as e:
+            print(f"    (P/E analysis unavailable: {e})")
+
+        print("\n" + "=" * 70)
+        print("DRY RUN COMPLETE — no proposal sent. Remove --dry-run to fire for real.")
+        print("=" * 70)
+        return
 
     if args.yes:
         print("(--yes flag: skipping confirmation)")
@@ -1689,6 +1865,8 @@ def main() -> None:
                     help="(explicit mode) player names you receive")
     sd.add_argument("--yes", action="store_true",
                     help="Skip the confirmation prompt (still prints preview)")
+    sd.add_argument("--dry-run", action="store_true", dest="dry_run",
+                    help="Preview KTC + P/E winner/loser analysis and exit without sending")
 
     args = parser.parse_args()
     if args.command is None:
