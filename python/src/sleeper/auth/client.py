@@ -197,6 +197,8 @@ class SleeperAuthClient:
             roster_ids
             created
             leg
+            adds
+            drops
             metadata
             settings
             draft_picks
@@ -324,3 +326,205 @@ class SleeperAuthClient:
             "leg": leg,
         })
         return data.get("cancel_trade") or {}
+
+    # -- inbox / convenience reads ----------------------------------------
+
+    def get_inbox(self, league_id: str, *, my_roster_id: int | None = None) -> list[dict]:
+        """Pending incoming trades I have not yet consented to.
+
+        Filters `get_trades(status='proposed')` to ones where my roster is a
+        participant and has not yet consented. If `my_roster_id` is None this
+        returns all proposed trades in the league.
+        """
+        trades = self.get_trades(league_id, statuses=["proposed"], limit=200)
+        if my_roster_id is None:
+            return trades
+        out = []
+        for t in trades:
+            roster_ids = t.get("roster_ids") or []
+            consenters = t.get("consenter_ids") or []
+            if my_roster_id in roster_ids and my_roster_id not in consenters:
+                out.append(t)
+        return out
+
+    def get_outbox(self, league_id: str, *, my_roster_id: int | None = None) -> list[dict]:
+        """Pending outgoing trades I have proposed (i.e., I am a consenter
+        but at least one other roster has not yet consented)."""
+        trades = self.get_trades(league_id, statuses=["proposed"], limit=200)
+        if my_roster_id is None:
+            return trades
+        out = []
+        for t in trades:
+            roster_ids = t.get("roster_ids") or []
+            consenters = t.get("consenter_ids") or []
+            if my_roster_id in roster_ids and my_roster_id in consenters:
+                # someone else still hasn't consented
+                if any(r not in consenters for r in roster_ids):
+                    out.append(t)
+        return out
+
+    # -- roster mutations -------------------------------------------------
+
+    def set_starters(
+        self,
+        league_id: str,
+        roster_id: int,
+        starters: list[str],
+        *,
+        leg: int | None = None,
+    ) -> dict:
+        """Set the starters list for a roster. Order must match league
+        roster_positions slots (excluding BN/IR/TAXI)."""
+        query = """
+        mutation update_roster_starters(
+          $league_id: Snowflake!, $roster_id: Int!, $starters: [String]!, $leg: Int
+        ) {
+          update_roster_starters(
+            league_id: $league_id, roster_id: $roster_id, starters: $starters, leg: $leg
+          ) {
+            roster_id starters players reserve taxi
+          }
+        }
+        """
+        data = self.gql("update_roster_starters", query, {
+            "league_id": league_id,
+            "roster_id": roster_id,
+            "starters": starters,
+            "leg": leg,
+        })
+        return data.get("update_roster_starters") or {}
+
+    def add_drop(
+        self,
+        league_id: str,
+        roster_id: int,
+        *,
+        add_player_id: str | None = None,
+        drop_player_id: str | None = None,
+    ) -> dict:
+        """Free-agent add and/or drop in a single transaction.
+
+        Either or both of add_player_id / drop_player_id must be set.
+        """
+        if not add_player_id and not drop_player_id:
+            raise ValueError("Specify at least one of add_player_id or drop_player_id")
+        adds: dict = {add_player_id: roster_id} if add_player_id else {}
+        drops: dict = {drop_player_id: roster_id} if drop_player_id else {}
+        query = """
+        mutation create_free_agent(
+          $league_id: Snowflake!, $roster_id: Int!,
+          $adds: JSON, $drops: JSON
+        ) {
+          create_free_agent(
+            league_id: $league_id, roster_id: $roster_id,
+            adds: $adds, drops: $drops
+          ) {
+            transaction_id status type created adds drops
+          }
+        }
+        """
+        data = self.gql("create_free_agent", query, {
+            "league_id": league_id,
+            "roster_id": roster_id,
+            "adds": adds,
+            "drops": drops,
+        })
+        return data.get("create_free_agent") or {}
+
+    def submit_waiver_claim(
+        self,
+        league_id: str,
+        roster_id: int,
+        *,
+        add_player_id: str,
+        drop_player_id: str | None = None,
+        faab_bid: int = 0,
+    ) -> dict:
+        """Submit a waiver claim. FAAB bid in dollars (0 if league uses
+        priority instead of FAAB)."""
+        adds = {add_player_id: roster_id}
+        drops: dict = {drop_player_id: roster_id} if drop_player_id else {}
+        query = """
+        mutation create_waiver_claim(
+          $league_id: Snowflake!, $roster_id: Int!,
+          $adds: JSON, $drops: JSON, $waiver_budget: Int
+        ) {
+          create_waiver_claim(
+            league_id: $league_id, roster_id: $roster_id,
+            adds: $adds, drops: $drops, waiver_budget: $waiver_budget
+          ) {
+            transaction_id status type created adds drops settings
+          }
+        }
+        """
+        data = self.gql("create_waiver_claim", query, {
+            "league_id": league_id,
+            "roster_id": roster_id,
+            "adds": adds,
+            "drops": drops,
+            "waiver_budget": int(faab_bid),
+        })
+        return data.get("create_waiver_claim") or {}
+
+    def cancel_waiver_claim(self, league_id: str, transaction_id: str, leg: int) -> dict:
+        query = """
+        mutation cancel_waiver_claim($league_id: Snowflake!, $transaction_id: Snowflake!, $leg: Int!) {
+          cancel_waiver_claim(league_id: $league_id, transaction_id: $transaction_id, leg: $leg) {
+            transaction_id status type created
+          }
+        }
+        """
+        data = self.gql("cancel_waiver_claim", query, {
+            "league_id": league_id,
+            "transaction_id": transaction_id,
+            "leg": leg,
+        })
+        return data.get("cancel_waiver_claim") or {}
+
+    def move_to_taxi(self, league_id: str, roster_id: int, player_id: str) -> dict:
+        """Move a rostered player to the taxi squad."""
+        query = """
+        mutation move_to_taxi($league_id: Snowflake!, $roster_id: Int!, $player_id: String!) {
+          move_to_taxi(league_id: $league_id, roster_id: $roster_id, player_id: $player_id) {
+            roster_id taxi
+          }
+        }
+        """
+        data = self.gql("move_to_taxi", query, {
+            "league_id": league_id,
+            "roster_id": roster_id,
+            "player_id": player_id,
+        })
+        return data.get("move_to_taxi") or {}
+
+    def move_to_ir(self, league_id: str, roster_id: int, player_id: str) -> dict:
+        """Move a rostered player to IR."""
+        query = """
+        mutation move_to_ir($league_id: Snowflake!, $roster_id: Int!, $player_id: String!) {
+          move_to_ir(league_id: $league_id, roster_id: $roster_id, player_id: $player_id) {
+            roster_id reserve
+          }
+        }
+        """
+        data = self.gql("move_to_ir", query, {
+            "league_id": league_id,
+            "roster_id": roster_id,
+            "player_id": player_id,
+        })
+        return data.get("move_to_ir") or {}
+
+    def activate_from_ir(self, league_id: str, roster_id: int, player_id: str) -> dict:
+        """Activate an IR player back to the active roster."""
+        query = """
+        mutation activate_from_ir($league_id: Snowflake!, $roster_id: Int!, $player_id: String!) {
+          activate_from_ir(league_id: $league_id, roster_id: $roster_id, player_id: $player_id) {
+            roster_id reserve players
+          }
+        }
+        """
+        data = self.gql("activate_from_ir", query, {
+            "league_id": league_id,
+            "roster_id": roster_id,
+            "player_id": player_id,
+        })
+        return data.get("activate_from_ir") or {}
