@@ -1186,6 +1186,267 @@ def cmd_gm_mode(args) -> None:
     print("=" * 78)
 
 
+def cmd_proposed_trades(args) -> None:
+    """List every pending/proposed trade in the league with KTC valuation.
+
+    Hits the private `league_transactions_filtered` GraphQL endpoint via
+    SleeperAuthClient and renders adds + traded picks per side, with the
+    same value adjustment used in `find-trades` and `trade-check`.
+    """
+    import asyncio
+    from sleeper.client import SleeperClient
+    from sleeper.enrichment.ktc import fetch_ktc_players
+    from sleeper.analytics.value_adjustment import compute_value_adjustment
+
+    user, league = _resolve_league(args.username, args.league)
+    print(f"League: {league.name}")
+    rosters, sleeper_players = _fetch_roster_and_players(league.league_id)
+
+    async def _get_users():
+        async with SleeperClient() as client:
+            return await client.leagues.get_users(league.league_id)
+    league_users = asyncio.run(_get_users())
+
+    # roster_id (int) -> display name
+    user_display: dict[str, str] = {}
+    for u in (league_users or []):
+        uid = str(u.user_id) if hasattr(u, "user_id") else ""
+        disp = u.display_name if hasattr(u, "display_name") else ""
+        if uid and disp:
+            user_display[uid] = disp
+    roster_to_owner: dict[int, str] = {}
+    for r in rosters:
+        oid = str(r.owner_id or "")
+        roster_to_owner[r.roster_id] = user_display.get(oid) or f"Roster {r.roster_id}"
+
+    print("Fetching KTC values...")
+    ktc_players = fetch_ktc_players()
+    sleeper_to_ktc = _build_sleeper_to_ktc(ktc_players, sleeper_players)
+    pick_ktc_by_name = {p.player_name: p for p in ktc_players if p.position == "RDP"}
+
+    def _ktc_for_player(pid: str) -> int:
+        ktc_p = sleeper_to_ktc.get(pid)
+        if not ktc_p or not ktc_p.superflex:
+            return 0
+        return ktc_p.superflex.value or 0
+
+    def _ktc_for_pick(season: str, rnd: int) -> int:
+        # Default to "Mid" tier for the season+round; safe fallback for unknown slots.
+        ord_str = {1: "1st", 2: "2nd", 3: "3rd", 4: "4th"}.get(rnd, f"{rnd}th")
+        for tier in ("Mid", "Early", "Late"):
+            name = f"{season} {tier} {ord_str}"
+            p = pick_ktc_by_name.get(name)
+            if p and p.superflex:
+                return p.superflex.value or 0
+        return 0
+
+    statuses = args.status if args.status else None  # None = all statuses
+    limit = args.limit
+    print(f"Fetching trades (auth required, statuses={statuses or 'ALL'}, limit={limit})...")
+    try:
+        from sleeper.auth import SleeperAuthClient
+    except Exception as e:
+        print(f"Auth client unavailable: {e}")
+        sys.exit(1)
+
+    # The GraphQL endpoint defaults to scoping results to the authenticated
+    # session's own trades. To get a TRUE league-wide view, we explicitly
+    # pass every roster ID in the league and dedupe by transaction_id.
+    all_roster_ids = sorted({r.roster_id for r in rosters})
+    try:
+        with SleeperAuthClient() as auth:
+            raw = auth.get_trades(
+                league.league_id,
+                statuses=statuses,
+                roster_ids=all_roster_ids,
+                limit=max(limit, 500),
+            )
+    except Exception as e:
+        print(f"Failed to fetch trades: {e}")
+        print("Set SLEEPER_TOKEN env var with a valid session token.")
+        sys.exit(1)
+
+    seen: set[str] = set()
+    trades: list[dict] = []
+    for t in raw:
+        tid = t.get("transaction_id")
+        if not tid or tid in seen:
+            continue
+        seen.add(tid)
+        trades.append(t)
+
+    if not trades:
+        print("No trades found.")
+        return
+
+    # Sort newest first by created timestamp
+    trades.sort(key=lambda t: t.get("created") or 0, reverse=True)
+
+    # League-wide status histogram (computed BEFORE the user filter so the
+    # totals reflect the actual league activity, not just the filtered slice).
+    by_status: dict[str, int] = {}
+    for t in trades:
+        s = t.get("status") or "unknown"
+        by_status[s] = by_status.get(s, 0) + 1
+    summary = "  ".join(f"{k}={v}" for k, v in sorted(by_status.items()))
+    print(f"\nLeague-wide: {len(trades)} trade(s) — {summary}")
+
+    # Optional per-user filter — case-insensitive substring match against
+    # display names of any roster involved in the trade.
+    user_filter = None
+    if args.user:
+        user_filter = [u.lower() for u in args.user]
+        before = len(trades)
+        filtered = []
+        for t in trades:
+            rids = t.get("roster_ids") or []
+            owners = " ".join(roster_to_owner.get(int(r), "").lower() for r in rids)
+            if any(u in owners for u in user_filter):
+                filtered.append(t)
+        trades = filtered
+        # Filtered status histogram
+        f_status: dict[str, int] = {}
+        for t in trades:
+            s = t.get("status") or "unknown"
+            f_status[s] = f_status.get(s, 0) + 1
+        f_summary = "  ".join(f"{k}={v}" for k, v in sorted(f_status.items()))
+        print(f"User filter {args.user}: {before} → {len(trades)} trades — {f_summary}")
+
+    print("=" * 88)
+
+    for idx, t in enumerate(trades, 1):
+        roster_ids: list[int] = t.get("roster_ids") or []
+        consenter_ids: list[int] = t.get("consenter_ids") or []
+        # Sleeper returns adds/drops as TOP-LEVEL fields {player_id: roster_id}.
+        # Fall back to metadata.adds for shapes where they're nested instead.
+        adds_raw = t.get("adds")
+        if not isinstance(adds_raw, dict):
+            meta = t.get("metadata") if isinstance(t.get("metadata"), dict) else {}
+            adds_raw = (meta.get("adds") if meta else None) or {}
+        adds: dict[str, int] = adds_raw or {}
+        draft_picks: list = t.get("draft_picks") or []
+
+        # Build per-roster bundles of what they RECEIVE
+        per_side: dict[int, dict] = {rid: {"players": [], "picks": [], "ktc": 0}
+                                      for rid in roster_ids}
+
+        for pid, rid in adds.items():
+            try:
+                rid_int = int(rid)
+            except (TypeError, ValueError):
+                continue
+            if rid_int not in per_side:
+                per_side[rid_int] = {"players": [], "picks": [], "ktc": 0}
+            p = sleeper_players.get(pid)
+            name = (p.full_name if p else None) or pid
+            pos = p.position if p else "?"
+            val = _ktc_for_player(pid)
+            per_side[rid_int]["players"].append((name, pos, val))
+            per_side[rid_int]["ktc"] += val
+
+        for dp in draft_picks:
+            # GraphQL response format varies:
+            #   - dict: {season, round, owner_id (receiver), previous_owner_id, roster_id (original)}
+            #   - string: "original_roster,season,round,from_roster,to_roster"
+            season: str = ""
+            rnd: int = 0
+            receiver: int | None = None
+            if isinstance(dp, dict):
+                try:
+                    receiver = int(dp.get("owner_id"))
+                    season = str(dp.get("season"))
+                    rnd = int(dp.get("round"))
+                except (TypeError, ValueError):
+                    continue
+            elif isinstance(dp, str):
+                parts = dp.split(",")
+                if len(parts) < 5:
+                    continue
+                try:
+                    season = str(parts[1])
+                    rnd = int(parts[2])
+                    receiver = int(parts[4])  # to_roster
+                except (ValueError, IndexError):
+                    continue
+            else:
+                continue
+
+            if receiver is None:
+                continue
+            val = _ktc_for_pick(season, rnd)
+            label = f"{season} R{rnd} pick"
+            if receiver not in per_side:
+                per_side[receiver] = {"players": [], "picks": [], "ktc": 0}
+            per_side[receiver]["picks"].append((label, val))
+            per_side[receiver]["ktc"] += val
+
+        # Render
+        from datetime import datetime
+        creator = t.get("creator")
+        created_ts = t.get("created")
+        date_str = ""
+        if created_ts:
+            try:
+                # Sleeper timestamps are ms-epoch
+                date_str = datetime.fromtimestamp(int(created_ts) / 1000).strftime("%Y-%m-%d %H:%M")
+            except (ValueError, OSError):
+                date_str = ""
+        status = t.get("status") or "?"
+        status_emoji = {"proposed": "⏳", "complete": "✅", "rejected": "❌",
+                        "cancelled": "🚫", "vetoed": "🛑"}.get(status, "•")
+        print(f"\n#{idx}  {status_emoji} {status.upper()}  ({date_str})  Trade ID {t.get('transaction_id')}")
+        print(f"     Creator user_id {creator}  |  Consenters: {consenter_ids or 'none'}")
+        sides = list(per_side.items())
+        for rid, bundle in sides:
+            owner = roster_to_owner.get(rid, f"Roster {rid}")
+            consent_mark = "✓" if rid in consenter_ids else "·"
+            print(f"  [{consent_mark}] {owner} (roster {rid}) RECEIVES — KTC {bundle['ktc']:,}")
+            for name, pos, val in bundle["players"]:
+                print(f"        {pos:3s}  {name:28s}  {val:>6,}")
+            for label, val in bundle["picks"]:
+                print(f"        PICK {label:24s}  {val:>6,}")
+
+        # Two-sided value adjustment (only meaningful when exactly 2 sides
+        # AND both sides actually receive something — Sleeper sometimes
+        # records a trade with one side getting only picks the other side
+        # didn't formally surrender).
+        if len(sides) == 2:
+            (rid_a, side_a), (rid_b, side_b) = sides
+            send_vals = [v for _, _, v in side_a["players"]] + [v for _, v in side_a["picks"]]
+            recv_vals = [v for _, _, v in side_b["players"]] + [v for _, v in side_b["picks"]]
+        else:
+            send_vals, recv_vals = [], []
+
+        if len(sides) == 2 and send_vals and recv_vals:
+            # NB: from side A's POV, side_a "sends" and side_b "receives".
+            adj = compute_value_adjustment(send_values=send_vals, receive_values=recv_vals)
+            raw_delta = side_b["ktc"] - side_a["ktc"]   # positive = B "wins" raw
+            if adj.favors == "receive":
+                # B is the multi-receiver of the stud; A consolidates onto B
+                adjusted = raw_delta - adj.adjustment
+            elif adj.favors == "send":
+                adjusted = raw_delta + adj.adjustment
+            else:
+                adjusted = raw_delta
+
+            owner_a = roster_to_owner.get(rid_a, f"Roster {rid_a}")
+            owner_b = roster_to_owner.get(rid_b, f"Roster {rid_b}")
+            print(f"\n     Raw KTC delta: {raw_delta:+,}  (positive favors {owner_b})")
+            if adj.adjustment > 0:
+                print(f"     Stud premium:  {adj.adjustment:+,} ({adj.stud_tier} tier, favors {adj.favors})")
+            print(f"     Adjusted:      {adjusted:+,}")
+            if adjusted > 800:
+                verdict = f"WIN for {owner_b}"
+            elif adjusted < -800:
+                verdict = f"WIN for {owner_a}"
+            elif abs(adjusted) <= 500:
+                verdict = "FAIR"
+            else:
+                verdict = f"slight edge to {owner_b if adjusted > 0 else owner_a}"
+            print(f"     Verdict:       {verdict}")
+        print("-" * 88)
+
+
 def cmd_find_trades(args) -> None:
     """Find trades targeting specific positions, with include/exclude filters.
 
@@ -1305,6 +1566,19 @@ def cmd_find_trades(args) -> None:
         if pname in exclude_set:
             continue
 
+        # Aging-QB chip discount: in Superflex, KTC face value for QBs 28+
+        # overstates what they actually transact for as a trade chip. A 31yo
+        # QB at 4,700 KTC doesn't return 4,700 of WR/RB value — apply a
+        # reality discount so the package math reflects market behavior.
+        age = getattr(p, "age", None) or 0
+        if p.position == "QB":
+            if age >= 32:
+                val = int(val * 0.45)
+            elif age >= 30:
+                val = int(val * 0.55)
+            elif age >= 28:
+                val = int(val * 0.75)
+
         if val > 0:
             my_chips.append({
                 "name": p.full_name,
@@ -1341,17 +1615,25 @@ def cmd_find_trades(args) -> None:
                     total = chip1["ktc"] + chip2["ktc"]
                     overpay = total - target["ktc"]
                     # Value adjustment: sending 2 chips for 1 target means we give
-                    # up a roster spot. If target is a stud, we owe *less* overpay
-                    # in effective terms (stud side gets credit). From our POV as
-                    # the multi-sender, favors="receive" (we're getting the stud),
-                    # so effective cost to us is HIGHER.
+                    # up a roster spot. If target is a stud, the receive side
+                    # (us) owes a stud premium ON TOP OF face value. So the
+                    # effective fair price is target_ktc + adj.adjustment, and
+                    # our effective overpay is what we sent minus that fair price.
                     adj = compute_value_adjustment(
                         send_values=[chip1["ktc"], chip2["ktc"]],
                         receive_values=[target["ktc"]],
                     )
-                    # adjusted_overpay = raw_overpay + adj (we pay more when they
-                    # have the stud). Cast to positive adjustment on our overpay.
-                    adjusted_overpay = overpay + (adj.adjustment if adj.favors == "receive" else -adj.adjustment)
+                    # When favors=="receive": fair_price = target + adj. We need
+                    # to send (face + premium) to break even; sending less means
+                    # we underpay. Subtract adj to reflect this debit.
+                    if adj.favors == "receive":
+                        adjusted_overpay = overpay - adj.adjustment
+                    elif adj.favors == "send":
+                        # We're consolidating — partner owes us premium. Adding
+                        # to our overpay reflects that we deserve more credit.
+                        adjusted_overpay = overpay + adj.adjustment
+                    else:
+                        adjusted_overpay = overpay
                     if args.min_overpay <= adjusted_overpay <= args.max_overpay:
                         trades.append({
                             "target": target,
@@ -1359,9 +1641,10 @@ def cmd_find_trades(args) -> None:
                             "overpay": overpay,
                             "adj": adj,
                             "adjusted_overpay": adjusted_overpay,
-                            # Score using the ADJUSTED overpay so value-adjustment
-                            # pushes lopsided-but-unfair trades down the list.
-                            "score": target["ktc"] * 1.5 - adjusted_overpay * 0.3,
+                            # Score: prefer trades where adjusted overpay is small
+                            # and positive (a "fair" overpay). Penalize anything
+                            # far from the fair-price midpoint.
+                            "score": target["ktc"] * 1.5 - abs(adjusted_overpay) * 0.5,
                         })
 
     if not trades:
@@ -1826,6 +2109,20 @@ def main() -> None:
     gm.add_argument("--owner", help="Analyze another owner in the same league (by display name)")
     gm.add_argument("--format", choices=["sf", "1qb"], default="sf", help="Format (default: sf)")
 
+    # proposed-trades
+    pt = subparsers.add_parser("proposed-trades",
+                               help="List every trade in the league (any status) with KTC valuation")
+    pt.add_argument("username", help="Sleeper username")
+    pt.add_argument("--league", help="League name filter")
+    pt.add_argument("--status", nargs="+", default=None,
+                    help="Status filter (proposed, complete, rejected, cancelled, vetoed). "
+                         "Default: all statuses.")
+    pt.add_argument("--limit", type=int, default=200,
+                    help="Max trades to fetch (default: 200)")
+    pt.add_argument("--user", nargs="+", default=None,
+                    help="Only show trades involving any of these usernames "
+                         "(case-insensitive substring match against display names)")
+
     # find-trades
     ft = subparsers.add_parser("find-trades",
                                help="Find trades targeting specific positions with filters")
@@ -1868,6 +2165,10 @@ def main() -> None:
     sd.add_argument("--dry-run", action="store_true", dest="dry_run",
                     help="Preview KTC + P/E winner/loser analysis and exit without sending")
 
+    # Agent-friendly commands (whoami/status/context/inbox/lineup/waivers/...)
+    from sleeper.cli_agent import add_subparsers as _add_agent_subparsers
+    agent_handlers = _add_agent_subparsers(subparsers)
+
     args = parser.parse_args()
     if args.command is None:
         parser.print_help()
@@ -1895,10 +2196,17 @@ def main() -> None:
         cmd_suggest_trades(args)
     elif args.command == "find-trades":
         cmd_find_trades(args)
+    elif args.command == "proposed-trades":
+        cmd_proposed_trades(args)
     elif args.command == "send-trade":
         cmd_send_trade(args)
     elif args.command == "gm-mode":
         cmd_gm_mode(args)
+    elif args.command in agent_handlers:
+        agent_handlers[args.command](args)
+    else:
+        parser.print_help()
+        sys.exit(1)
 
 
 if __name__ == "__main__":
