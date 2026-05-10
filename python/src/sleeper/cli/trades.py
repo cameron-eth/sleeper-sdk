@@ -394,12 +394,8 @@ def cmd_find_trades(args) -> None:
         # reality discount so the package math reflects market behavior.
         age = getattr(p, "age", None) or 0
         if p.position == "QB":
-            if age >= 32:
-                val = int(val * 0.45)
-            elif age >= 30:
-                val = int(val * 0.55)
-            elif age >= 28:
-                val = int(val * 0.75)
+            from sleeper.analytics.chip_value import apply_qb_age_discount
+            val = apply_qb_age_discount(val, age)
 
         if val > 0:
             my_chips.append({
@@ -411,22 +407,24 @@ def cmd_find_trades(args) -> None:
 
     my_chips.sort(key=lambda x: -x["ktc"])
 
-    # Find trades: target player vs combinations of my chips
-    from sleeper.analytics.value_adjustment import compute_value_adjustment
+    # Find trades: target player vs combinations of my chips. Scoring
+    # math (raw + adjusted overpay, sign correctness for the stud-side
+    # premium) lives in analytics.find_trades_engine — extracted there
+    # so it's unit-testable in isolation.
+    from sleeper.analytics.find_trades_engine import is_fair_overpay, package_overpay
 
     trades = []
     for target in trade_targets:
         # Single chip (1-for-1: no value adjustment needed, count is equal)
         for chip in my_chips:
-            overpay = chip["ktc"] - target["ktc"]
-            if args.min_overpay <= overpay <= args.max_overpay:
-                adj = compute_value_adjustment([chip["ktc"]], [target["ktc"]])
+            score = package_overpay([chip["ktc"]], target["ktc"])
+            if is_fair_overpay(score, min_overpay=args.min_overpay, max_overpay=args.max_overpay):
                 trades.append({
                     "target": target,
                     "chips": [chip],
-                    "overpay": overpay,
-                    "adj": adj,
-                    "adjusted_overpay": overpay,  # 1-for-1 has 0 adjustment
+                    "overpay": score.raw_overpay,
+                    "adj": score.adjustment,
+                    "adjusted_overpay": score.adjusted_overpay,
                     "score": target["ktc"] * 1.5,
                 })
 
@@ -434,39 +432,25 @@ def cmd_find_trades(args) -> None:
         if not args.single_only:
             for i, chip1 in enumerate(my_chips):
                 for chip2 in my_chips[i+1:]:
-                    total = chip1["ktc"] + chip2["ktc"]
-                    overpay = total - target["ktc"]
-                    # Value adjustment: sending 2 chips for 1 target means we give
-                    # up a roster spot. If target is a stud, the receive side
-                    # (us) owes a stud premium ON TOP OF face value. So the
-                    # effective fair price is target_ktc + adj.adjustment, and
-                    # our effective overpay is what we sent minus that fair price.
-                    adj = compute_value_adjustment(
-                        send_values=[chip1["ktc"], chip2["ktc"]],
-                        receive_values=[target["ktc"]],
+                    score = package_overpay(
+                        [chip1["ktc"], chip2["ktc"]],
+                        target["ktc"],
                     )
-                    # When favors=="receive": fair_price = target + adj. We need
-                    # to send (face + premium) to break even; sending less means
-                    # we underpay. Subtract adj to reflect this debit.
-                    if adj.favors == "receive":
-                        adjusted_overpay = overpay - adj.adjustment
-                    elif adj.favors == "send":
-                        # We're consolidating — partner owes us premium. Adding
-                        # to our overpay reflects that we deserve more credit.
-                        adjusted_overpay = overpay + adj.adjustment
-                    else:
-                        adjusted_overpay = overpay
-                    if args.min_overpay <= adjusted_overpay <= args.max_overpay:
+                    if is_fair_overpay(
+                        score,
+                        min_overpay=args.min_overpay,
+                        max_overpay=args.max_overpay,
+                    ):
                         trades.append({
                             "target": target,
                             "chips": [chip1, chip2],
-                            "overpay": overpay,
-                            "adj": adj,
-                            "adjusted_overpay": adjusted_overpay,
+                            "overpay": score.raw_overpay,
+                            "adj": score.adjustment,
+                            "adjusted_overpay": score.adjusted_overpay,
                             # Score: prefer trades where adjusted overpay is small
                             # and positive (a "fair" overpay). Penalize anything
                             # far from the fair-price midpoint.
-                            "score": target["ktc"] * 1.5 - abs(adjusted_overpay) * 0.5,
+                            "score": target["ktc"] * 1.5 - abs(score.adjusted_overpay) * 0.5,
                         })
 
     if not trades:

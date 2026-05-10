@@ -342,15 +342,12 @@ def cmd_proposed_trades(args) -> None:
             return 0
         return ktc_p.superflex.value or 0
 
+    # Pick KTC lookup: delegates to analytics.pick_value (Mid → Early → Late
+    # tier fallback). Pure function, unit-testable without network.
+    from sleeper.analytics.pick_value import lookup_pick_ktc
+
     def _ktc_for_pick(season: str, rnd: int) -> int:
-        # Default to "Mid" tier for the season+round; safe fallback for unknown slots.
-        ord_str = {1: "1st", 2: "2nd", 3: "3rd", 4: "4th"}.get(rnd, f"{rnd}th")
-        for tier in ("Mid", "Early", "Late"):
-            name = f"{season} {tier} {ord_str}"
-            p = pick_ktc_by_name.get(name)
-            if p and p.superflex:
-                return p.superflex.value or 0
-        return 0
+        return lookup_pick_ktc(season, rnd, pick_ktc_by_name, fmt="sf")
 
     statuses = args.status if args.status else None  # None = all statuses
     limit = args.limit
