@@ -2165,9 +2165,14 @@ def main() -> None:
     sd.add_argument("--dry-run", action="store_true", dest="dry_run",
                     help="Preview KTC + P/E winner/loser analysis and exit without sending")
 
-    # Agent-friendly commands (whoami/status/context/inbox/lineup/waivers/...)
-    from sleeper.cli_agent import add_subparsers as _add_agent_subparsers
-    agent_handlers = _add_agent_subparsers(subparsers)
+    # Agent-friendly commands (whoami/status/context/inbox/lineup/waivers/...).
+    # The cli_agent module is optional — when it's not present (e.g. in the
+    # base public install), the public CLI still works without those commands.
+    try:
+        from sleeper.cli_agent import add_subparsers as _add_agent_subparsers
+        agent_handlers = _add_agent_subparsers(subparsers)
+    except ImportError:
+        agent_handlers = {}
 
     args = parser.parse_args()
     if args.command is None:
