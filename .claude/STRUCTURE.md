@@ -1,8 +1,10 @@
 # Sleeper SDK — Skill Layer
 
 **Skills (this directory)** are the high-level "what to do when the user
-asks X" specs. **CLI commands** (in `python/src/sleeper/cli.py` and
-`cli_agent.py`) are the low-level primitives skills orchestrate.
+asks X" specs. **CLI commands** (in the `python/src/sleeper/cli/`
+package — split across `values.py`, `trades.py`, `send_trade.py`,
+`analysis.py` — and `cli_agent.py`) are the low-level primitives skills
+orchestrate.
 
 ## Architecture
 
@@ -84,22 +86,35 @@ parallel:
 
 ## Adding a new skill
 
-1. Add the new CLI subcommand in `python/src/sleeper/cli.py` (or
-   `cli_agent.py` if it's auth-required).
-2. Wire it into argparse + the dispatch table in `main()`.
+1. Add the command function (`def cmd_<name>(args)`) in the right
+   `python/src/sleeper/cli/` submodule:
+   - `values.py` — read-only KTC + valuation
+   - `trades.py` — trade scoring/search
+   - `analysis.py` — picks, gm-mode, proposed-trades
+   - `send_trade.py` — only for write ops
+   - `cli_agent.py` — only for auth-required agent commands
+2. Wire it into argparse + the dispatch table in `cli/_main.py`.
 3. Add a smoke test entry in `python/tests/test_cli_smoke.py`.
-4. Create `<command-name>.md` in this directory describing:
+4. If there's pure math involved, extract it into a new
+   `sleeper.analytics.<name>` module and write unit tests in
+   `python/tests/test_<name>.py`.
+5. Create `<command-name>.md` in this directory describing:
    - **When to use this skill** — natural-language triggers
    - **How to run** — concrete CLI invocations
    - **Useful follow-ups** — which other skills/commands chain in
    - **Key context** — gotchas the agent must know
-5. Open a PR. CI must be green before merge.
+6. Open a PR. CI must be green before merge.
 
 ## Repository hygiene rules
 
-- No file over **750 LOC** (current outlier: `cli.py` at 2,218 — slated
-  for refactor into `cli/` package)
-- Pure logic lives in `analytics/` and is unit-tested
+- **No file over 750 LOC.** Current largest: `cli/values.py` at 586.
+- **Pure logic lives in `analytics/`** and is unit-tested. Recent
+  extractions: `chip_value.py`, `pick_value.py`, `find_trades_engine.py`.
+- **CLI command handlers are thin** — they orchestrate analytics
+  primitives, never re-implement math inline.
+- **Shared CLI helpers live in `cli/_common.py`** — every command module
+  imports from there (DRY by convention).
+- **Skills are markdown-only** — never Python in `.claude/commands/`.
 - CLI command handlers are thin wrappers that orchestrate analytics
 - Auth code is isolated in `auth/`
 - Skills are markdown-only; never put Python in `.claude/commands/`

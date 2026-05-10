@@ -252,6 +252,7 @@ send-trade       →  Preview + fire the proposal via Sleeper GraphQL
 | `gm-mode <user>` | Archetype report: CONTENDER / RELOADING / REBUILDING / PRETENDER + strategy |
 | `find-trades <user>` | Flexible trade search with position / include / exclude / mode filters |
 | `suggest-trades <user>` | Auto-suggest 1-for-1 swaps matching positional surplus ↔ need |
+| `proposed-trades <user>` | League-wide trade history with KTC verdicts (auth — needs `SLEEPER_TOKEN`) |
 | `send-trade <user>` | Propose a trade via Sleeper GraphQL (preview + confirm) |
 | `league-values <user>` | KTC values for every player on a roster |
 | `roster-rank <user>` | Rank all teams in a league by total KTC value |
@@ -262,6 +263,7 @@ send-trade       →  Preview + fire the proposal via Sleeper GraphQL
 | `buy-sell buy\|sell` | Players trading below / above their KTC value |
 | `ktc-trend <player>` | Historical KTC from daily snapshots |
 | `pe-ratio` | Price-to-Earnings scan — find undervalued players |
+| Agent commands | `whoami`, `inbox`, `outbox`, `lineup`, `lineup-health`, `roster`, `matchup`, `waivers`, `trade-respond`, `lineup-set`, `waiver-claim`, `drop`, `add`, `taxi-move`, `ir-move`, `activate`, `execute`, `preview-show` (auth required) |
 
 ### `gm-mode` — archetype + strategy
 
@@ -365,37 +367,66 @@ Skills in `.claude/commands/` let an agent invoke the right CLI recipe for the r
 
 ```
 sleeper-sdk/
-├── .claude/commands/           # Claude skill files
-├── .github/workflows/          # Daily KTC value snapshots
+├── .claude/
+│   ├── STRUCTURE.md            # Skill ↔ CLI ↔ analytics map + hygiene rules
+│   └── commands/               # Claude skill files (16 skills, all *.md)
+├── .github/workflows/
+│   ├── ktc-snapshot.yml        # Daily KTC value snapshots
+│   └── tests.yml               # pytest matrix on every PR to main
+├── scripts/
+│   └── protect_main.sh         # GitHub branch-protection helper
 ├── python/
 │   ├── examples/
+│   ├── tests/                  # 80 pytest unit tests, ~3.6s
 │   └── src/sleeper/
 │       ├── api/                # Layer 1: Sleeper REST wrappers
 │       ├── auth/               # GraphQL client (trades + private reads)
 │       ├── enrichment/         # Layer 2: KTC, marketplace, stats
 │       │   ├── ktc.py
-│       │   ├── marketplace.py
+│       │   ├── ktc_history.py
+│       │   ├── id_bridge.py
 │       │   ├── rankings.py
 │       │   ├── stats.py
 │       │   └── values.py
-│       ├── analytics/          # Layer 3: rank, classify, score
+│       ├── analytics/          # Layer 3: rank, classify, score (pure logic)
+│       │   ├── value_adjustment.py    # Stud-side premium math (99% covered)
+│       │   ├── chip_value.py          # Aging-QB discount curve
+│       │   ├── pick_value.py          # KTC pick (season, round) → value
+│       │   ├── find_trades_engine.py  # Package scoring (raw + adjusted overpay)
 │       │   ├── gm_mode.py
 │       │   ├── trade_suggestions.py
-│       │   ├── valuation.py    # P/E ratio
-│       │   ├── user_collector.py
+│       │   ├── valuation.py           # P/E ratio
 │       │   ├── user_trades.py
 │       │   ├── standings.py
 │       │   ├── dynasty.py
 │       │   ├── matchups.py
 │       │   ├── trades.py
 │       │   └── rosters.py
+│       ├── agent/              # Agent helpers (envelope, preview, build_context)
 │       ├── types/              # Pydantic models
 │       ├── cache/              # Player + KTC on-disk cache
 │       ├── http/               # Rate-limited httpx client
-│       ├── cli.py              # Layer 4: entry point for all commands
+│       ├── cli/                # Layer 4: command package (each file ≤ 600 LOC)
+│       │   ├── __init__.py     #   exports main
+│       │   ├── __main__.py     #   `python -m sleeper.cli` entry
+│       │   ├── _main.py        #   argparse setup + dispatch
+│       │   ├── _common.py      #   shared helpers (DRY)
+│       │   ├── values.py       #   market-value, league-values, roster-rank,
+│       │   │                   #   trending, buy-sell, pe-ratio, ktc-trend
+│       │   ├── trades.py       #   trade-check, suggest-trades, find-trades
+│       │   ├── send_trade.py   #   send-trade (auth write)
+│       │   └── analysis.py     #   picks, gm-mode, proposed-trades
+│       ├── cli_agent.py        # Auth-required agent commands (inbox, lineup, …)
+│       ├── errors.py           # ErrorCode constants + structured exceptions
 │       └── client.py           # Main SleeperClient
 └── pyproject.toml
 ```
+
+**Hygiene rules** (enforced by convention; documented in `.claude/STRUCTURE.md`):
+- No file over **750 LOC** (current largest: `cli/values.py` at 586)
+- Pure logic lives in `analytics/` and is unit-tested
+- CLI command handlers are thin wrappers that orchestrate analytics
+- Skills are markdown-only; never Python in `.claude/commands/`
 
 ## Features at a glance
 
