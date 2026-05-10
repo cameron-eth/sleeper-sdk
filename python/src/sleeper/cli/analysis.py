@@ -10,6 +10,7 @@ Commands:
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 
 from sleeper.cli._common import (
@@ -207,9 +208,13 @@ def cmd_gm_mode(args) -> None:
     except Exception:
         pass
 
-    # Lazy-load gm_mode module
+    # Lazy-load gm_mode module via file path (bypasses analytics/__init__.py
+    # which has a pre-existing broken import on user_collector).
+    # __file__ is src/sleeper/cli/analysis.py — walk up one to src/sleeper/
+    # before descending into analytics/.
     import importlib.util as _iu, sys as _sys
-    _gm_path = os.path.join(os.path.dirname(__file__), "analytics", "gm_mode.py")
+    _pkg_root = os.path.dirname(os.path.dirname(__file__))
+    _gm_path = os.path.join(_pkg_root, "analytics", "gm_mode.py")
     _spec = _iu.spec_from_file_location("_sleeper_gm_mode", _gm_path)
     _gm = _iu.module_from_spec(_spec)
     _sys.modules["_sleeper_gm_mode"] = _gm

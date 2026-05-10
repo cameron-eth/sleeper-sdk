@@ -368,7 +368,9 @@ def cmd_pe_ratio(args: argparse.Namespace) -> None:
     import importlib.util
     import sys as _sys
     import os
-    _val_path = os.path.join(os.path.dirname(__file__), "analytics", "valuation.py")
+    # __file__ is src/sleeper/cli/values.py — walk up one to src/sleeper/
+    _pkg_root = os.path.dirname(os.path.dirname(__file__))
+    _val_path = os.path.join(_pkg_root, "analytics", "valuation.py")
     _spec = importlib.util.spec_from_file_location("_sleeper_valuation", _val_path)
     valuation = importlib.util.module_from_spec(_spec)
     _sys.modules["_sleeper_valuation"] = valuation

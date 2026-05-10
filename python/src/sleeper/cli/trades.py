@@ -177,9 +177,11 @@ def cmd_suggest_trades(args) -> None:
                     p.sleeper_id = ktc_to_sleeper.get(p.ktc_id)
                 print(f"Computing P/E ratios for {datetime.now().year}...")
                 stats = get_season_stats([datetime.now().year])
-                # Lazy-load valuation by file path to dodge analytics/__init__ chain
+                # Lazy-load valuation by file path to dodge analytics/__init__ chain.
+                # __file__ is src/sleeper/cli/trades.py — walk up one to src/sleeper/
                 import importlib.util as _iu, sys as _sys
-                _vp = os.path.join(os.path.dirname(__file__), "analytics", "valuation.py")
+                _pkg_root = os.path.dirname(os.path.dirname(__file__))
+                _vp = os.path.join(_pkg_root, "analytics", "valuation.py")
                 _spec = _iu.spec_from_file_location("_sleeper_valuation_pe", _vp)
                 _val = _iu.module_from_spec(_spec)
                 _sys.modules["_sleeper_valuation_pe"] = _val
