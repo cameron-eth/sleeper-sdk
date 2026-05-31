@@ -112,3 +112,162 @@ def _ktc_trend(ktc_p, fmt: str) -> int:
         return 0
     pv = ktc_p.superflex if fmt == "sf" else ktc_p.one_qb
     return pv.overall_trend
+
+
+# ---------------------------------------------------------------------------
+# Verdict thresholds & helper
+# ---------------------------------------------------------------------------
+# A single source of truth for trade-verdict bands. Used by trade-check,
+# proposed-trades, and send-trade preview so they all agree on what "WIN"
+# vs "FAIR" vs "LOSS" means after the value adjustment is applied.
+
+VERDICT_WIN_THRESHOLD = 500       # adjusted delta above this = WIN
+VERDICT_FAIR_BAND = 800           # within ±this of zero = FAIR / slight edge
+
+
+def _verdict_from_delta(adjusted_delta: int) -> str:
+    """Translate an adjusted KTC delta into a verdict label.
+
+    Positive = trade favors the user. Bands tuned against the historical
+    Meat Market trade audit: <500 KTC noise; 500-800 a soft edge;
+    >800 a meaningful win.
+    """
+    if adjusted_delta > VERDICT_WIN_THRESHOLD:
+        if adjusted_delta > VERDICT_FAIR_BAND:
+            return "WIN — significant value"
+        return "SLIGHT WIN — minor value"
+    if adjusted_delta < -VERDICT_WIN_THRESHOLD:
+        if adjusted_delta < -VERDICT_FAIR_BAND:
+            return "LOSS — significant value"
+        return "SLIGHT LOSS — minor value"
+    return "FAIR"
+
+
+# ---------------------------------------------------------------------------
+# find-trades mode defaults — strategy lookup, not an if/elif chain
+# ---------------------------------------------------------------------------
+
+MODE_DEFAULTS: dict[str, tuple[int, int]] = {
+    "normal":      (300, 3500),    # slight overpay band — fair stud tax
+    "upgrade":     (-5000, 0),     # net positive value to user
+    "downtiering": (300, 5000),    # liquidating star talent for picks
+}
+
+
+def _mode_defaults(mode: str) -> tuple[int, int]:
+    """Return (min_overpay, max_overpay) for a find-trades mode.
+
+    Unknown modes fall back to the normal band so the CLI doesn't crash
+    if someone passes a typo — they just get the default behavior.
+    """
+    return MODE_DEFAULTS.get(mode, MODE_DEFAULTS["normal"])
+
+
+# ---------------------------------------------------------------------------
+# League display + player view helpers
+# ---------------------------------------------------------------------------
+
+
+def _build_user_display(league_users) -> dict[str, str]:
+    """Map Sleeper user_id (string) → display_name from a league users list.
+
+    Replaces a 6-line `if hasattr(u, ...)` + filter block that was
+    duplicated in 6+ CLI commands. Empty-safe: None or empty input
+    returns an empty dict.
+    """
+    out: dict[str, str] = {}
+    for u in (league_users or []):
+        uid = str(getattr(u, "user_id", "") or "")
+        disp = getattr(u, "display_name", "") or ""
+        if uid and disp:
+            out[uid] = disp
+    return out
+
+
+def _player_view(pid: str, sleeper_players: dict, sleeper_to_ktc: dict, fmt: str = "sf") -> dict:
+    """Resolve a Sleeper player_id into a render-ready dict.
+
+    Returns {player_id, name, position, team, ktc}. Falls back to the raw
+    pid when the player isn't in the cache, returns ktc=0 when KTC has no
+    entry for them. Used by every command that prints player lines.
+    """
+    p = sleeper_players.get(pid)
+    ktc_p = sleeper_to_ktc.get(pid)
+    return {
+        "player_id": pid,
+        "name": (getattr(p, "full_name", None) if p else None) or pid,
+        "position": (getattr(p, "position", None) if p else None) or "?",
+        "team": (getattr(p, "team", None) if p else None) or "",
+        "ktc": _ktc_value(ktc_p, fmt),
+    }
+
+
+# ---------------------------------------------------------------------------
+# League context bundle — opens every command identically
+# ---------------------------------------------------------------------------
+
+
+def _setup_league_context(
+    username: str,
+    league_filter: str | None = None,
+    *,
+    fetch_users: bool = False,
+) -> dict:
+    """One-shot opening sequence for every league-scoped CLI command.
+
+    Returns a dict with `user`, `league`, `rosters`, `sleeper_players`,
+    and optionally `league_users` + `user_display` when `fetch_users=True`.
+    Collapses the 4-line `_resolve_league` + `_fetch_roster_and_players`
+    boilerplate that opens every command in the package.
+    """
+    import asyncio
+    from sleeper.client import SleeperClient
+
+    user, league = _resolve_league(username, league_filter)
+    rosters, sleeper_players = _fetch_roster_and_players(league.league_id)
+    ctx = {
+        "user": user,
+        "league": league,
+        "rosters": rosters,
+        "sleeper_players": sleeper_players,
+    }
+    if fetch_users:
+        async def _get_users():
+            async with SleeperClient() as client:
+                return await client.leagues.get_users(league.league_id)
+        league_users = asyncio.run(_get_users())
+        ctx["league_users"] = league_users
+        ctx["user_display"] = _build_user_display(league_users)
+    return ctx
+
+
+# ---------------------------------------------------------------------------
+# Lazy-load analytics modules by file path
+# ---------------------------------------------------------------------------
+
+
+def _lazy_load_analytics(module_name: str):
+    """Import `sleeper.analytics.<module_name>` by file path.
+
+    `sleeper.analytics.__init__` re-exports some modules whose import
+    chain can break in partial installs (user_collector references that
+    won't resolve without optional deps). Loading by file path bypasses
+    the package init entirely, so commands that just need gm_mode or
+    valuation can succeed without pulling in everything.
+
+    Returns the loaded module object — caller pulls the functions they
+    need off it.
+    """
+    import importlib.util
+    import os
+    import sys as _sys
+
+    # __file__ is .../sleeper/cli/_common.py → walk up to .../sleeper/
+    pkg_root = os.path.dirname(os.path.dirname(__file__))
+    path = os.path.join(pkg_root, "analytics", f"{module_name}.py")
+    spec_name = f"_sleeper_lazy_{module_name}"
+    spec = importlib.util.spec_from_file_location(spec_name, path)
+    mod = importlib.util.module_from_spec(spec)
+    _sys.modules[spec_name] = mod
+    spec.loader.exec_module(mod)
+    return mod
