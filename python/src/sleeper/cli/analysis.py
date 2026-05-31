@@ -15,10 +15,14 @@ import sys
 
 from sleeper.cli._common import (
     _build_sleeper_to_ktc,
+    _build_user_display,
     _fetch_roster_and_players,
     _format_table,
     _ktc_value,
+    _lazy_load_analytics,
+    _player_view,
     _resolve_league,
+    _verdict_from_delta,
 )
 
 
@@ -46,12 +50,7 @@ def cmd_picks(args: argparse.Namespace) -> None:
     traded_picks, league_users = asyncio.run(_get_picks_and_users())
 
     # Build lookup maps
-    user_display: dict[str, str] = {}
-    for u in (league_users or []):
-        uid = str(u.user_id) if hasattr(u, "user_id") else ""
-        disp = u.display_name if hasattr(u, "display_name") else ""
-        if uid and disp:
-            user_display[uid] = disp
+    user_display = _build_user_display(league_users)
 
     # roster_id (int) -> display name, via owner_id
     roster_to_owner: dict[str, str] = {}
@@ -161,12 +160,7 @@ def cmd_gm_mode(args) -> None:
             return users, picks
 
     league_users, traded_picks = asyncio.run(_get_users_and_picks())
-    user_display: dict[str, str] = {}
-    for u in (league_users or []):
-        uid = str(u.user_id) if hasattr(u, "user_id") else ""
-        disp = u.display_name if hasattr(u, "display_name") else ""
-        if uid and disp:
-            user_display[uid] = disp
+    user_display = _build_user_display(league_users)
 
     # Find target roster (by username, or --owner override for another team)
     target_user_id = user.user_id
@@ -212,13 +206,7 @@ def cmd_gm_mode(args) -> None:
     # which has a pre-existing broken import on user_collector).
     # __file__ is src/sleeper/cli/analysis.py — walk up one to src/sleeper/
     # before descending into analytics/.
-    import importlib.util as _iu, sys as _sys
-    _pkg_root = os.path.dirname(os.path.dirname(__file__))
-    _gm_path = os.path.join(_pkg_root, "analytics", "gm_mode.py")
-    _spec = _iu.spec_from_file_location("_sleeper_gm_mode", _gm_path)
-    _gm = _iu.module_from_spec(_spec)
-    _sys.modules["_sleeper_gm_mode"] = _gm
-    _spec.loader.exec_module(_gm)
+    _gm = _lazy_load_analytics("gm_mode")
 
     report = _gm.generate_gm_report(
         my_roster=my_roster,
@@ -332,12 +320,7 @@ def cmd_trade_partners(args) -> None:
         async with SleeperClient() as client:
             return await client.leagues.get_users(league.league_id)
     league_users = asyncio.run(_get_users())
-    user_display: dict[str, str] = {}
-    for u in (league_users or []):
-        uid = str(u.user_id) if hasattr(u, "user_id") else ""
-        disp = u.display_name if hasattr(u, "display_name") else ""
-        if uid and disp:
-            user_display[uid] = disp
+    user_display = _build_user_display(league_users)
 
     my_roster = next((r for r in rosters if r.owner_id == user.user_id), None)
     if my_roster is None:
@@ -348,15 +331,7 @@ def cmd_trade_partners(args) -> None:
     ktc_players = fetch_ktc_players()
     sleeper_to_ktc = _build_sleeper_to_ktc(ktc_players, sleeper_players)
 
-    # Lazy-load gm_mode via path (analytics/__init__.py has a stale import
-    # that can fail in some installs — same pattern cmd_gm_mode uses).
-    import importlib.util as _iu, sys as _sys
-    _pkg_root = os.path.dirname(os.path.dirname(__file__))
-    _gm_path = os.path.join(_pkg_root, "analytics", "gm_mode.py")
-    _spec = _iu.spec_from_file_location("_sleeper_gm_mode_partners", _gm_path)
-    _gm = _iu.module_from_spec(_spec)
-    _sys.modules["_sleeper_gm_mode_partners"] = _gm
-    _spec.loader.exec_module(_gm)
+    _gm = _lazy_load_analytics("gm_mode")
 
     def _classify(roster):
         """Run gm_mode on a roster and return (archetype, strong_set, weak_set)."""
@@ -523,12 +498,7 @@ def cmd_proposed_trades(args) -> None:
     league_users = asyncio.run(_get_users())
 
     # roster_id (int) -> display name
-    user_display: dict[str, str] = {}
-    for u in (league_users or []):
-        uid = str(u.user_id) if hasattr(u, "user_id") else ""
-        disp = u.display_name if hasattr(u, "display_name") else ""
-        if uid and disp:
-            user_display[uid] = disp
+    user_display = _build_user_display(league_users)
     roster_to_owner: dict[int, str] = {}
     for r in rosters:
         oid = str(r.owner_id or "")
@@ -747,11 +717,15 @@ def cmd_proposed_trades(args) -> None:
             if adj.adjustment > 0:
                 print(f"     Stud premium:  {adj.adjustment:+,} ({adj.stud_tier} tier, favors {adj.favors})")
             print(f"     Adjusted:      {adjusted:+,}")
-            if adjusted > 800:
+            # Per-trade verdict reuses the same band constants as
+            # _verdict_from_delta but renders "WIN for <owner>" since both
+            # sides are named in this context.
+            from sleeper.cli._common import VERDICT_FAIR_BAND, VERDICT_WIN_THRESHOLD
+            if adjusted > VERDICT_FAIR_BAND:
                 verdict = f"WIN for {owner_b}"
-            elif adjusted < -800:
+            elif adjusted < -VERDICT_FAIR_BAND:
                 verdict = f"WIN for {owner_a}"
-            elif abs(adjusted) <= 500:
+            elif abs(adjusted) <= VERDICT_WIN_THRESHOLD:
                 verdict = "FAIR"
             else:
                 verdict = f"slight edge to {owner_b if adjusted > 0 else owner_a}"

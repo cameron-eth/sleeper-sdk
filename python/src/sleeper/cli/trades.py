@@ -16,12 +16,16 @@ import sys
 
 from sleeper.cli._common import (
     _build_sleeper_to_ktc,
+    _build_user_display,
     _fetch_roster_and_players,
     _format_table,
     _ktc_rank,
     _ktc_trend,
     _ktc_value,
+    _lazy_load_analytics,
+    _mode_defaults,
     _resolve_league,
+    _verdict_from_delta,
 )
 
 # Cache directory for `suggest-trades` output — `send-trade --suggestion N`
@@ -93,16 +97,8 @@ def cmd_trade_check(args: argparse.Namespace) -> None:
         print(f"Adjusted Net:        {adjusted_diff:+,}")
     print()
 
-    # Use adjusted_diff for the final verdict
-    final = adjusted_diff
-    if final > 500:
-        verdict = "WIN  — you gain significant value (after Value Adjustment)"
-    elif final > 0:
-        verdict = "SLIGHT WIN — you gain minor value (after Value Adjustment)"
-    elif final > -500:
-        verdict = "SLIGHT LOSS — you give up minor value (after Value Adjustment)"
-    else:
-        verdict = "LOSS — you give up significant value (after Value Adjustment)"
+    # Verdict via single source of truth in _common
+    verdict = _verdict_from_delta(adjusted_diff)
 
     print(f"Verdict: {verdict}")
 
@@ -148,12 +144,7 @@ def cmd_suggest_trades(args) -> None:
             return await client.leagues.get_users(league.league_id)
 
     league_users = asyncio.run(_get_users())
-    user_display: dict[str, str] = {}
-    for u in (league_users or []):
-        uid = str(u.user_id) if hasattr(u, "user_id") else ""
-        disp = u.display_name if hasattr(u, "display_name") else ""
-        if uid and disp:
-            user_display[uid] = disp
+    user_display = _build_user_display(league_users)
 
     my_roster = next((r for r in rosters if r.owner_id == user.user_id), None)
     if my_roster is None:
@@ -179,25 +170,13 @@ def cmd_suggest_trades(args) -> None:
                 stats = get_season_stats([datetime.now().year])
                 # Lazy-load valuation by file path to dodge analytics/__init__ chain.
                 # __file__ is src/sleeper/cli/trades.py — walk up one to src/sleeper/
-                import importlib.util as _iu, sys as _sys
-                _pkg_root = os.path.dirname(os.path.dirname(__file__))
-                _vp = os.path.join(_pkg_root, "analytics", "valuation.py")
-                _spec = _iu.spec_from_file_location("_sleeper_valuation_pe", _vp)
-                _val = _iu.module_from_spec(_spec)
-                _sys.modules["_sleeper_valuation_pe"] = _val
-                _spec.loader.exec_module(_val)
+                _val = _lazy_load_analytics("valuation")
                 pes = _val.compute_pe_ratios(ktc_players, stats, seasons=[datetime.now().year], fmt=fmt)
                 pe_by_sid = {p.sleeper_id: p.pe_ratio for p in pes if p.sleeper_id and p.pe_ratio}
         except Exception as e:
             print(f"(P/E enrichment failed: {e}; continuing without)")
 
-    # Lazy-load trade_suggestions same way
-    import importlib.util as _iu, sys as _sys
-    _ts_path = os.path.join(os.path.dirname(__file__), "analytics", "trade_suggestions.py")
-    _spec = _iu.spec_from_file_location("_sleeper_trade_suggestions", _ts_path)
-    _ts = _iu.module_from_spec(_spec)
-    _sys.modules["_sleeper_trade_suggestions"] = _ts
-    _spec.loader.exec_module(_ts)
+    _ts = _lazy_load_analytics("trade_suggestions")
 
     suggestions = _ts.suggest_trades(
         my_roster=my_roster,
@@ -283,20 +262,12 @@ def cmd_find_trades(args) -> None:
     from sleeper.client import SleeperClient
     from sleeper.enrichment.ktc import fetch_ktc_players, build_ktc_to_sleeper_map
 
-    # Auto-adjust thresholds based on mode if not explicitly set
+    # Auto-adjust thresholds based on mode — strategy lookup in _common
+    default_min, default_max = _mode_defaults(args.mode)
     if args.min_overpay is None:
-        if args.mode == "upgrade":
-            args.min_overpay = -5000
-        else:
-            args.min_overpay = 300
-
+        args.min_overpay = default_min
     if args.max_overpay is None:
-        if args.mode == "upgrade":
-            args.max_overpay = 0
-        elif args.mode == "downtiering":
-            args.max_overpay = 5000
-        else:
-            args.max_overpay = 3500
+        args.max_overpay = default_max
 
     user, league = _resolve_league(args.username, args.league)
     rosters, sleeper_players = _fetch_roster_and_players(league.league_id)
@@ -306,12 +277,7 @@ def cmd_find_trades(args) -> None:
             return await client.leagues.get_users(league.league_id)
 
     league_users = asyncio.run(_get_users())
-    user_display: dict[str, str] = {}
-    for u in (league_users or []):
-        uid = str(u.user_id) if hasattr(u, "user_id") else ""
-        disp = u.display_name if hasattr(u, "display_name") else ""
-        if uid and disp:
-            user_display[uid] = disp
+    user_display = _build_user_display(league_users)
 
     my_roster = next((r for r in rosters if r.owner_id == user.user_id), None)
     if my_roster is None:

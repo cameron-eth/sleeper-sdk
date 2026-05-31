@@ -17,11 +17,13 @@ import argparse
 
 from sleeper.cli._common import (
     _build_sleeper_to_ktc,
+    _build_user_display,
     _fetch_roster_and_players,
     _format_table,
     _ktc_rank,
     _ktc_trend,
     _ktc_value,
+    _lazy_load_analytics,
     _resolve_league,
 )
 
@@ -170,12 +172,7 @@ def cmd_roster_rank(args: argparse.Namespace) -> None:
             return await client.leagues.get_users(league.league_id)
 
     league_users = asyncio.run(_get_users())
-    user_display: dict[str, str] = {}
-    for u in (league_users or []):
-        uid = str(u.user_id) if hasattr(u, "user_id") else ""
-        disp = u.display_name if hasattr(u, "display_name") else ""
-        if uid and disp:
-            user_display[uid] = disp
+    user_display = _build_user_display(league_users)
 
     print("Fetching KTC values...")
     ktc_players = fetch_ktc_players()
@@ -365,16 +362,7 @@ def cmd_pe_ratio(args: argparse.Namespace) -> None:
     from sleeper.enrichment.ktc import fetch_ktc_players, build_ktc_to_sleeper_map
     # Load valuation module by file path to bypass analytics/__init__.py
     # (which has a pre-existing broken import on user_collector).
-    import importlib.util
-    import sys as _sys
-    import os
-    # __file__ is src/sleeper/cli/values.py — walk up one to src/sleeper/
-    _pkg_root = os.path.dirname(os.path.dirname(__file__))
-    _val_path = os.path.join(_pkg_root, "analytics", "valuation.py")
-    _spec = importlib.util.spec_from_file_location("_sleeper_valuation", _val_path)
-    valuation = importlib.util.module_from_spec(_spec)
-    _sys.modules["_sleeper_valuation"] = valuation
-    _spec.loader.exec_module(valuation)
+    valuation = _lazy_load_analytics("valuation")
     compute_pe_ratios = valuation.compute_pe_ratios
 
     fmt = args.format

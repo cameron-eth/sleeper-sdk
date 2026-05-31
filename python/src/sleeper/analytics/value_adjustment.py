@@ -99,6 +99,33 @@ ISOLATION_GAP_MULT_MID = 0.08
 
 
 # ---------------------------------------------------------------------------
+# Tier dispatch tables — single source of truth so all four components scale
+# consistently. Replaces three if/elif chains scattered through the module.
+# ---------------------------------------------------------------------------
+
+TIER_PREMIUM_MAP: dict[str, float] = {
+    "elite": TIER_PREMIUM_ELITE,
+    "high":  TIER_PREMIUM_HIGH,
+    "mid":   TIER_PREMIUM_MID,
+    "none":  0.0,
+}
+
+ISOLATION_GAP_MAP: dict[str, float] = {
+    "elite": ISOLATION_GAP_MULT_ELITE,
+    "high":  ISOLATION_GAP_MULT_HIGH,
+    "mid":   ISOLATION_GAP_MULT_MID,
+    "none":  0.0,
+}
+
+SPOT_MULTIPLIER_MAP: dict[str, float] = {
+    "elite": 1.25,
+    "high":  1.10,
+    "mid":   1.00,
+    "none":  1.00,
+}
+
+
+# ---------------------------------------------------------------------------
 # Dilution penalty — the "10 shit players ≠ 1 elite" tax.
 # Scales with chip count AND how low-quality the average chip is.
 # ---------------------------------------------------------------------------
@@ -144,13 +171,7 @@ def _stud_tier(ktc: int) -> tuple[str, int]:
 
 def _tier_premium(target_ktc: int, tier: str) -> int:
     """Scarcity premium — % of target KTC by tier."""
-    if tier == "elite":
-        return int(target_ktc * TIER_PREMIUM_ELITE)
-    if tier == "high":
-        return int(target_ktc * TIER_PREMIUM_HIGH)
-    if tier == "mid":
-        return int(target_ktc * TIER_PREMIUM_MID)
-    return 0
+    return int(target_ktc * TIER_PREMIUM_MAP.get(tier, 0.0))
 
 
 def _isolation_gap(filler_values: list[int], target_ktc: int, tier: str) -> int:
@@ -166,13 +187,7 @@ def _isolation_gap(filler_values: list[int], target_ktc: int, tier: str) -> int:
     if target_ktc <= 0 or not filler_values:
         return 0
     total_gap = sum(max(0, target_ktc - v) for v in filler_values)
-    if tier == "elite":
-        return int(total_gap * ISOLATION_GAP_MULT_ELITE)
-    if tier == "high":
-        return int(total_gap * ISOLATION_GAP_MULT_HIGH)
-    if tier == "mid":
-        return int(total_gap * ISOLATION_GAP_MULT_MID)
-    return 0
+    return int(total_gap * ISOLATION_GAP_MAP.get(tier, 0.0))
 
 
 def _dilution_penalty(filler_values: list[int], target_ktc: int) -> int:
@@ -270,11 +285,7 @@ def compute_value_adjustment(
     target_ktc = max(receive_values) if favors == "receive" else max(send_values)
 
     # 1. Spot premium — per roster-spot, scaled by tier
-    spot_component = spot_diff * spot_value
-    if tier == "elite":
-        spot_component = int(spot_component * 1.25)
-    elif tier == "high":
-        spot_component = int(spot_component * 1.10)
+    spot_component = int(spot_diff * spot_value * SPOT_MULTIPLIER_MAP.get(tier, 1.0))
 
     # 2. Tier scarcity premium
     tier_prem = _tier_premium(target_ktc, tier)
