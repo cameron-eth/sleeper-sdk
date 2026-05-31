@@ -302,6 +302,204 @@ def cmd_gm_mode(args) -> None:
     print("=" * 78)
 
 
+def cmd_trade_partners(args) -> None:
+    """Rank other league owners by trade-partner compatibility.
+
+    For each rival roster, classify their archetype with gm_mode, derive
+    their positional strengths/weaknesses, optionally fold in past
+    completed-trade history with the user, and produce a single
+    "engagement priority" score. Output is a ranked table with rationale.
+
+    Auth: optional. With SLEEPER_TOKEN, the history factor uses real
+    league-wide completed trades. Without, history defaults to zero.
+    """
+    import asyncio
+    from sleeper.client import SleeperClient
+    from sleeper.enrichment.ktc import fetch_ktc_players
+    from sleeper.analytics.partner_match import (
+        PartnerScore,
+        TradeHistory,
+        rank_partners,
+        score_partner,
+    )
+    from sleeper.analytics.find_trades_engine import package_overpay
+
+    user, league = _resolve_league(args.username, args.league)
+    print(f"League: {league.name}")
+    rosters, sleeper_players = _fetch_roster_and_players(league.league_id)
+
+    async def _get_users():
+        async with SleeperClient() as client:
+            return await client.leagues.get_users(league.league_id)
+    league_users = asyncio.run(_get_users())
+    user_display: dict[str, str] = {}
+    for u in (league_users or []):
+        uid = str(u.user_id) if hasattr(u, "user_id") else ""
+        disp = u.display_name if hasattr(u, "display_name") else ""
+        if uid and disp:
+            user_display[uid] = disp
+
+    my_roster = next((r for r in rosters if r.owner_id == user.user_id), None)
+    if my_roster is None:
+        print(f"No roster found for '{args.username}' in {league.name}.")
+        sys.exit(1)
+
+    print("Fetching KTC values...")
+    ktc_players = fetch_ktc_players()
+    sleeper_to_ktc = _build_sleeper_to_ktc(ktc_players, sleeper_players)
+
+    # Lazy-load gm_mode via path (analytics/__init__.py has a stale import
+    # that can fail in some installs — same pattern cmd_gm_mode uses).
+    import importlib.util as _iu, sys as _sys
+    _pkg_root = os.path.dirname(os.path.dirname(__file__))
+    _gm_path = os.path.join(_pkg_root, "analytics", "gm_mode.py")
+    _spec = _iu.spec_from_file_location("_sleeper_gm_mode_partners", _gm_path)
+    _gm = _iu.module_from_spec(_spec)
+    _sys.modules["_sleeper_gm_mode_partners"] = _gm
+    _spec.loader.exec_module(_gm)
+
+    def _classify(roster):
+        """Run gm_mode on a roster and return (archetype, strong_set, weak_set)."""
+        try:
+            report = _gm.generate_gm_report(
+                my_roster=roster,
+                all_rosters=rosters,
+                sleeper_players=sleeper_players,
+                sleeper_to_ktc=sleeper_to_ktc,
+                user_display=user_display,
+                fmt=args.format,
+            )
+            arch = report.archetype.archetype if report.archetype else "UNKNOWN"
+            strong = {p.position for p in report.positions if p.strength_score >= 0.4}
+            weak = {p.position for p in report.positions if p.strength_score <= -0.4}
+            return arch, strong, weak
+        except Exception:
+            return "UNKNOWN", set(), set()
+
+    print(f"Classifying {len(rosters)} rosters...")
+    user_arch, user_strong, user_weak = _classify(my_roster)
+
+    # Optional: pull league-wide trade history
+    histories: dict[int, TradeHistory] = {}
+    try:
+        from sleeper.auth import SleeperAuthClient
+        with SleeperAuthClient() as auth:
+            trades = auth.get_trades(
+                league.league_id,
+                statuses=["complete"],
+                roster_ids=[r.roster_id for r in rosters],
+                limit=500,
+            )
+        seen: set[str] = set()
+        my_rid = my_roster.roster_id
+        for t in trades:
+            tid = t.get("transaction_id")
+            if not tid or tid in seen:
+                continue
+            seen.add(tid)
+            rids = t.get("roster_ids") or []
+            if my_rid not in rids:
+                continue
+            # Build per-side KTC totals from `adds`
+            adds = t.get("adds") or {}
+            per_side: dict[int, list[int]] = {int(r): [] for r in rids}
+            for pid, rid in adds.items():
+                try:
+                    rid_i = int(rid)
+                except (TypeError, ValueError):
+                    continue
+                ktc_p = sleeper_to_ktc.get(pid)
+                val = (ktc_p.superflex.value if ktc_p and ktc_p.superflex else 0) or 0
+                per_side.setdefault(rid_i, []).append(val)
+            # Pair vs other rosters (skip 3-way trades from scoring)
+            others = [r for r in rids if r != my_rid]
+            if len(others) != 1:
+                continue
+            other = int(others[0])
+            send_vals = [v for v in per_side.get(other, []) if v > 0]
+            recv_vals = [v for v in per_side.get(my_rid, []) if v > 0]
+            if not send_vals and not recv_vals:
+                continue
+            h = histories.setdefault(other, TradeHistory())
+            h.total += 1
+            # Score from user's perspective: user sends recv_vals... wait,
+            # `adds` shows who RECEIVED each player. So per_side[my_rid] is
+            # what user RECEIVED. The OTHER's per_side is what user GAVE.
+            send_for_score = recv_vals or [0]   # what user "spent" to receive
+            target_total = sum(per_side.get(other, []))
+            if recv_vals and per_side.get(other):
+                # User sent per_side[other] (what other received), received per_side[my_rid]
+                # Use package_overpay from user's perspective: user sent A, got B target
+                sent = per_side.get(other, [])
+                got = sum(per_side.get(my_rid, []))
+                if got > 0 and sent:
+                    score = package_overpay(send_values=sent, target_ktc=got)
+                    # adjusted_overpay POSITIVE = user overpaid (gave more value)
+                    # Flip for user-net: negative overpay = user net win
+                    user_net = -score.adjusted_overpay
+                    h.user_net_ktc += user_net
+                    if user_net > 800:
+                        h.user_wins += 1
+                    elif user_net < -800:
+                        h.user_losses += 1
+                    else:
+                        h.fair += 1
+    except Exception as e:
+        print(f"  (history fetch skipped: {e})")
+
+    # Score each non-user owner
+    scores: list[PartnerScore] = []
+    for roster in rosters:
+        if roster.owner_id == user.user_id:
+            continue
+        owner = user_display.get(str(roster.owner_id), f"Roster {roster.roster_id}")
+        p_arch, p_strong, p_weak = _classify(roster)
+        history = histories.get(roster.roster_id, TradeHistory())
+        scores.append(score_partner(
+            owner=owner,
+            roster_id=roster.roster_id,
+            user_archetype=user_arch,
+            partner_archetype=p_arch,
+            user_strong=user_strong,
+            user_weak=user_weak,
+            partner_strong=p_strong,
+            partner_weak=p_weak,
+            history=history,
+        ))
+
+    ranked = rank_partners(scores)
+    top_n = args.top if hasattr(args, "top") else 12
+
+    print()
+    print("=" * 78)
+    print(f"  TRADE PARTNERS for {args.username} in {league.name}")
+    print(f"  Your archetype: {user_arch}")
+    if user_strong:
+        print(f"  Your strengths:  {', '.join(sorted(user_strong))}")
+    if user_weak:
+        print(f"  Your weaknesses: {', '.join(sorted(user_weak))}")
+    print("=" * 78)
+    print()
+    headers = ["#", "Owner", "Score", "Arch", "Syn", "Pos", "Hist", "Rationale"]
+    rows = []
+    for i, s in enumerate(ranked[:top_n], 1):
+        rows.append([
+            str(i),
+            s.owner[:22],
+            f"{s.total:+d}",
+            s.archetype[:9],
+            f"{s.synergy:+d}",
+            f"{s.positional.score:+d}",
+            f"{s.history_pts:+d}",
+            s.rationale[:60],
+        ])
+    print(_format_table(headers, rows))
+    print()
+    if ranked:
+        top = ranked[0]
+        print(f"🎯 Top engage target: {top.owner} (score {top.total:+d})")
+        print(f"   {top.rationale}")
+
 
 def cmd_proposed_trades(args) -> None:
     """List every pending/proposed trade in the league with KTC valuation.

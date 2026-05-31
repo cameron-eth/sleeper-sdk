@@ -19,6 +19,7 @@ from sleeper.cli.analysis import (
     cmd_gm_mode,
     cmd_picks,
     cmd_proposed_trades,
+    cmd_trade_partners,
 )
 from sleeper.cli.send_trade import cmd_send_trade
 from sleeper.cli.trades import (
@@ -158,6 +159,16 @@ def main() -> None:
     gm.add_argument("--owner", help="Analyze another owner in the same league (by display name)")
     gm.add_argument("--format", choices=["sf", "1qb"], default="sf", help="Format (default: sf)")
 
+    # trade-partners
+    tp_ = subparsers.add_parser("trade-partners",
+                                help="Rank league owners by trade-partner compatibility "
+                                     "(archetype synergy + positional fit + history)")
+    tp_.add_argument("username", help="Sleeper username")
+    tp_.add_argument("--league", help="League name filter")
+    tp_.add_argument("--format", choices=["sf", "1qb"], default="sf", help="Format (default: sf)")
+    tp_.add_argument("--top", type=int, default=12,
+                     help="Max partners to display (default: 12)")
+
     # proposed-trades
     pt = subparsers.add_parser("proposed-trades",
                                help="List every trade in the league (any status) with KTC valuation")
@@ -256,6 +267,8 @@ def main() -> None:
         cmd_send_trade(args)
     elif args.command == "gm-mode":
         cmd_gm_mode(args)
+    elif args.command == "trade-partners":
+        cmd_trade_partners(args)
     elif args.command in agent_handlers:
         agent_handlers[args.command](args)
     else:
