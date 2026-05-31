@@ -41,21 +41,15 @@ from sleeper.analytics.rosters import (
     RosterComposition,
     PlayerTeamMapping,
 )
-try:
-    from sleeper.analytics.user_collector import (
-        collect_user_league_snapshots,
-        extract_trades_only,
-        LeagueSnapshot,
-    )
-    from sleeper.analytics.user_trades import (
-        evaluate_user_trades,
-        build_user_trade_report,
-        EvaluatedTrade,
-        TradeSideEvaluation,
-        UserTradeReport,
-    )
-except ImportError:
-    pass
+from sleeper.analytics.user_collector import (
+    collect_user_league_snapshots,
+    extract_trades_only,
+    LeagueSnapshot,
+)
+# Note: `user_trades.py` was the legacy marketplace-based trade analyzer.
+# Its functionality is now served by the `proposed-trades` CLI command
+# which uses KTC + the value_adjustment engine. Old module deleted because
+# it imported from the long-removed enrichment/marketplace.py.
 
 from sleeper.analytics.valuation import compute_pe_ratios, PlayerPERatio
 from sleeper.analytics.trade_suggestions import (
