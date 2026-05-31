@@ -86,18 +86,62 @@ def cmd_trade_check(args: argparse.Namespace) -> None:
     print(f"Raw Net Difference:  {diff:+,}  ({pct:.1f}% of give side)" if pct else f"Raw Net Difference:  {diff:+,}")
 
     # Apply KTC-style value adjustment
-    from sleeper.analytics.value_adjustment import apply_adjustment_to_delta
+    from sleeper.analytics.value_adjustment import (
+        apply_adjustment_to_delta,
+        suggest_evening_piece,
+    )
     give_vals = [_ktc_value(p, fmt) for p in give_found]
     get_vals = [_ktc_value(p, fmt) for p in get_found]
     adjusted_diff, adj = apply_adjustment_to_delta(diff, give_vals, get_vals)
 
+    # Two views on the same trade — both are useful, they answer different
+    # questions. See `find-trades` Adj Δ vs this number for the contrast:
+    #
+    #   Net Effective Value   = receive − send ± adjustment  (this number)
+    #     "After premium math, do I net positive value?"
+    #     Sign convention: positive favors you.
+    #
+    #   Overpay vs Fair Price = send − (target + adjustment)
+    #     "Am I overpaying relative to the market fair price?"
+    #     What `find-trades` filters on. Sign convention: positive = you
+    #     overpay (acceptable in the stud-tax band; rejected if too high).
+    #
+    # For a 2-for-1 where you receive an elite stud, you can simultaneously
+    # NET-LOSE the math (adjusted < 0) AND be within the FAIR overpay band
+    # (overpay-vs-fair small). The trade will transact, but you still
+    # "paid" the premium in net-value terms. Both are correct; rendering
+    # both prevents the user from being misled by either one alone.
     if adj.adjustment > 0:
         print(f"Value Adjustment:    {adj.adjustment:+,} KTC  (favors {adj.favors} side — {adj.stud_tier} stud tier)")
         print(f"  └─ {adj.rationale}")
-        print(f"Adjusted Net:        {adjusted_diff:+,}")
+        print()
+        print(f"Net Effective Value: {adjusted_diff:+,}   (after premium — your net win/loss)")
+
+        # Overpay vs fair price: what `find-trades` filters on.
+        give_total = sum(give_vals)
+        get_total = sum(get_vals)
+        if adj.favors == "receive":
+            # You're receiving the stud; fair price = target + premium
+            fair_price = get_total + adj.adjustment
+            overpay_vs_fair = give_total - fair_price
+        elif adj.favors == "send":
+            # You're sending the stud; partner owes premium so fair price drops
+            fair_price = get_total - adj.adjustment
+            overpay_vs_fair = give_total - fair_price
+        else:
+            fair_price = get_total
+            overpay_vs_fair = give_total - fair_price
+        print(f"Overpay vs Fair:     {overpay_vs_fair:+,}   (vs market fair price ≈ {fair_price:,})")
+
+        # KTC's "missing piece" framing — what would even the trade?
+        if adjusted_diff < 0:
+            print(f"To balance:          add {suggest_evening_piece(abs(adjusted_diff))} to your side")
+        elif adjusted_diff > 0:
+            print(f"To balance:          partner would add {suggest_evening_piece(abs(adjusted_diff))}")
     print()
 
-    # Verdict via single source of truth in _common
+    # Verdict is anchored on Net Effective Value — the user-facing
+    # "did I win or lose this trade" question.
     verdict = _verdict_from_delta(adjusted_diff)
 
     print(f"Verdict: {verdict}")
