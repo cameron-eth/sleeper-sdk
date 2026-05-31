@@ -1,21 +1,24 @@
-"""Tests for analytics.value_adjustment.
+"""Tests for analytics.value_adjustment (v2 model).
 
 Coverage:
 - Empty / degenerate cases
 - Even-spot trades produce zero adjustment
 - Tier classification (elite / high / mid / none)
-- Spot premium scaling with tier
-- Tier scarcity premium (% of target KTC)
-- Quality-gap penalty when top send chip is far below target
+- Spot premium scales with tier
+- Tier scarcity premium = % of target KTC
+- Isolation gap considers ALL filler chips (not just top)
+- Dilution penalty quantifies "10 shit players ≠ 1 elite"
 - Sign correctness for `apply_adjustment_to_delta`
-- Regression tests for the May 2026 tuning + sign fix
+- Regression tests for the May 2026 sign-fix
+- suggest_evening_piece — reverse-engineered "missing piece" label
 """
 from __future__ import annotations
 
 import pytest
 
 from sleeper.analytics.value_adjustment import (
-    QUALITY_GAP_MULT_ELITE,
+    DILUTION_MULT,
+    ISOLATION_GAP_MULT_ELITE,
     SPOT_VALUE_BASE,
     SPOT_VALUE_ELITE,
     STUD_TIER_ELITE,
@@ -26,6 +29,7 @@ from sleeper.analytics.value_adjustment import (
     TIER_PREMIUM_MID,
     apply_adjustment_to_delta,
     compute_value_adjustment,
+    suggest_evening_piece,
 )
 
 
@@ -55,7 +59,7 @@ def test_2_for_2_returns_zero_adjustment():
 
 
 # ---------------------------------------------------------------------------
-# Tier classification — verifies the boundary thresholds match the constants
+# Tier classification
 # ---------------------------------------------------------------------------
 
 @pytest.mark.parametrize("ktc,expected_tier", [
@@ -69,13 +73,12 @@ def test_2_for_2_returns_zero_adjustment():
 ])
 def test_tier_classification(ktc, expected_tier):
     """Top stud's KTC determines the tier; verify each threshold."""
-    # Provide an even trade so adjustment is 0 but tier is reported.
     adj = compute_value_adjustment(send_values=[ktc], receive_values=[1])
     assert adj.stud_tier == expected_tier
 
 
 # ---------------------------------------------------------------------------
-# Spot premium component
+# Spot premium
 # ---------------------------------------------------------------------------
 
 def test_2_for_1_with_elite_stud_uses_elite_spot_value():
@@ -84,13 +87,10 @@ def test_2_for_1_with_elite_stud_uses_elite_spot_value():
         send_values=[10000],
         receive_values=[3000, 3000],
     )
-    # favors=send because send has 1 chip = the stud side
     assert adj.favors == "send"
     assert adj.roster_spot_diff == 1
-    # spot premium = SPOT_VALUE_ELITE * 1.25 (elite multiplier)
     expected_spot = int(SPOT_VALUE_ELITE * 1 * 1.25)
-    # Plus tier premium and (possibly) quality gap on top
-    assert adj.adjustment >= expected_spot
+    assert adj.spot_component == expected_spot
 
 
 def test_2_for_1_with_no_stud_uses_base_spot_value():
@@ -100,8 +100,7 @@ def test_2_for_1_with_no_stud_uses_base_spot_value():
         receive_values=[1000, 800],
     )
     assert adj.stud_tier == "none"
-    # Should use SPOT_VALUE_BASE without tier scaling
-    assert adj.adjustment == SPOT_VALUE_BASE
+    assert adj.spot_component == SPOT_VALUE_BASE
 
 
 # ---------------------------------------------------------------------------
@@ -109,74 +108,131 @@ def test_2_for_1_with_no_stud_uses_base_spot_value():
 # ---------------------------------------------------------------------------
 
 def test_elite_target_carries_30pct_tier_premium():
-    """Receiving an elite (8000+) stud adds 30% of target KTC as tier premium."""
     target = 10000
     adj = compute_value_adjustment(
-        send_values=[3000, 3000],   # filler side
+        send_values=[3000, 3000],
         receive_values=[target],
     )
     assert adj.favors == "receive"
     assert adj.stud_tier == "elite"
-    # adjustment should include >= 30% of target as tier premium component
-    expected_tier_prem = int(target * TIER_PREMIUM_ELITE)
-    assert adj.adjustment >= expected_tier_prem
+    assert adj.tier_premium == int(target * TIER_PREMIUM_ELITE)
 
 
 def test_high_target_carries_18pct_tier_premium():
-    target = 7000  # high tier
+    target = 7000
     adj = compute_value_adjustment(
         send_values=[3000, 2500],
         receive_values=[target],
     )
     assert adj.stud_tier == "high"
-    expected_tier_prem = int(target * TIER_PREMIUM_HIGH)
-    assert adj.adjustment >= expected_tier_prem
+    assert adj.tier_premium == int(target * TIER_PREMIUM_HIGH)
 
 
 def test_mid_target_carries_8pct_tier_premium():
-    target = 5000  # mid tier
+    target = 5000
     adj = compute_value_adjustment(
         send_values=[2000, 1500],
         receive_values=[target],
     )
     assert adj.stud_tier == "mid"
-    expected_tier_prem = int(target * TIER_PREMIUM_MID)
-    assert adj.adjustment >= expected_tier_prem
+    assert adj.tier_premium == int(target * TIER_PREMIUM_MID)
 
 
 # ---------------------------------------------------------------------------
-# Quality-gap penalty
+# Isolation gap — every chip below target compounds (v2 change)
 # ---------------------------------------------------------------------------
 
-def test_quality_gap_penalty_for_elite_target_with_weak_filler():
-    """When best send chip is far below an elite target, gap penalty applies."""
+def test_isolation_gap_sums_all_filler_chips_not_just_top():
+    """The v2 isolation_gap considers EVERY chip below target.
+
+    Old v1 quality_gap was max(0, target - top_send) × mult — a chip pack
+    of [9K, 1K, 1K] for 10K target only penalized the 1K gap on top chip.
+    v2 sums (10K-9K) + (10K-1K) + (10K-1K) = 19K of gap.
+    """
     target = 10000
-    weak_top = 2000   # large gap
-    decent_top = 8000   # small gap
-    adj_weak = compute_value_adjustment(
-        send_values=[weak_top, 1500],
-        receive_values=[target],
-    )
-    adj_decent = compute_value_adjustment(
-        send_values=[decent_top, 1500],
-        receive_values=[target],
-    )
-    # Bigger gap => bigger adjustment
-    assert adj_weak.adjustment > adj_decent.adjustment
-
-
-def test_quality_gap_zero_when_top_send_meets_target():
-    """No gap penalty when send side already has a chip ≥ target KTC."""
     adj = compute_value_adjustment(
-        send_values=[10000, 1000],
+        send_values=[9000, 1000, 1000],
+        receive_values=[target],
+    )
+    expected_gap = ((target - 9000) + (target - 1000) + (target - 1000))
+    expected_iso = int(expected_gap * ISOLATION_GAP_MULT_ELITE)
+    assert adj.isolation_gap == expected_iso
+
+
+def test_isolation_gap_ignores_chips_above_target():
+    """A chip ABOVE target contributes nothing to the gap — only below counts."""
+    target = 5000
+    adj = compute_value_adjustment(
+        send_values=[8000, 1000],   # 8000 is above 5000, ignore for gap
+        receive_values=[target],
+    )
+    expected_gap = target - 1000   # only the 1000 chip
+    expected_iso = int(expected_gap * ISOLATION_GAP_MULT_ELITE)
+    assert adj.isolation_gap == expected_iso
+
+
+def test_quality_gap_zero_when_all_chips_meet_target():
+    adj = compute_value_adjustment(
+        send_values=[10000, 11000],
         receive_values=[8500],
     )
-    # Top send (10000) >= target (8500) -> gap penalty is 0
-    # adjustment should equal spot premium + tier premium (no gap)
-    spot = int(SPOT_VALUE_ELITE * 1 * 1.25)
-    tier_prem = int(8500 * TIER_PREMIUM_ELITE)
-    expected = spot + tier_prem
-    assert adj.adjustment == expected
+    assert adj.isolation_gap == 0
+
+
+# ---------------------------------------------------------------------------
+# Dilution penalty — the v2 headline feature
+# ---------------------------------------------------------------------------
+
+def test_dilution_is_zero_for_one_for_one():
+    """A 1-for-1 trade has no dilution by definition."""
+    adj = compute_value_adjustment(send_values=[5000], receive_values=[9000])
+    assert adj.dilution == 0
+
+
+def test_dilution_is_zero_when_avg_meets_target():
+    """If avg chip value is at the target, nothing is diluted."""
+    target = 5000
+    adj = compute_value_adjustment(
+        send_values=[5000, 5000, 5000],
+        receive_values=[target],
+    )
+    assert adj.dilution == 0
+
+
+def test_dilution_grows_with_chip_count():
+    """Same avg ratio but more chips => more dilution tax."""
+    target = 10000
+    # 2 chips at 2K each = 1/5 ratio, 1 extra spot
+    adj_2 = compute_value_adjustment(send_values=[2000, 2000], receive_values=[target])
+    # 5 chips at 2K each = 1/5 ratio, 4 extra spots — should hurt much more
+    adj_5 = compute_value_adjustment(
+        send_values=[2000, 2000, 2000, 2000, 2000],
+        receive_values=[target],
+    )
+    assert adj_5.dilution > adj_2.dilution * 2   # noticeably more than linear
+
+
+def test_dilution_grows_as_avg_drops():
+    """Same chip count but lower avg => more dilution tax."""
+    target = 10000
+    # 2 chips at 4K each — avg is 40% of target
+    adj_mid = compute_value_adjustment(send_values=[4000, 4000], receive_values=[target])
+    # 2 chips at 500 each — avg is 5% of target
+    adj_low = compute_value_adjustment(send_values=[500, 500], receive_values=[target])
+    assert adj_low.dilution > adj_mid.dilution
+
+
+def test_ten_filler_chips_for_elite_pays_massive_dilution():
+    """The canonical KTC case: many filler ≠ one elite. Must hurt a lot."""
+    target = 10000
+    adj = compute_value_adjustment(
+        send_values=[1000] * 10,
+        receive_values=[target],
+    )
+    # Dilution alone should exceed a 2026 mid 1st (~4800 KTC)
+    assert adj.dilution > 4800
+    # And the TOTAL adjustment should make this trade WILDLY unfair
+    assert adj.adjustment > 20000
 
 
 # ---------------------------------------------------------------------------
@@ -185,7 +241,7 @@ def test_quality_gap_zero_when_top_send_meets_target():
 
 def test_apply_adjustment_receive_stud_lowers_adjusted_delta():
     """If you receive the stud, the adjustment makes the trade WORSE for you."""
-    raw_delta = 1000   # you "win" 1000 on raw
+    raw_delta = 1000
     adjusted, adj = apply_adjustment_to_delta(
         raw_delta=raw_delta,
         send_values=[3000, 2500],
@@ -198,7 +254,7 @@ def test_apply_adjustment_receive_stud_lowers_adjusted_delta():
 
 def test_apply_adjustment_send_stud_raises_adjusted_delta():
     """If you send the stud, the adjustment makes the trade BETTER for you."""
-    raw_delta = -1000   # you "lose" 1000 on raw
+    raw_delta = -1000
     adjusted, adj = apply_adjustment_to_delta(
         raw_delta=raw_delta,
         send_values=[8500],
@@ -221,95 +277,106 @@ def test_apply_adjustment_even_spots_returns_raw_delta():
 
 
 # ---------------------------------------------------------------------------
-# Regression tests for the May 2026 tuning fix
+# Regression tests
 # ---------------------------------------------------------------------------
 
 def test_regression_fannin_mayfield_for_jsn_needs_substantial_extra_value():
     """User intuition: Fannin + Mayfield-discount → JSN should need a 1st+2nd.
 
-    Combined effect: the QB age discount in find-trades shaves ~2,120 KTC
-    off Mayfield's face (4,709 -> 2,589). On top of that, this test checks
-    that compute_value_adjustment alone reports a deficit > one 1st pick
-    (~5K) — i.e. you owe at LEAST a first to land JSN, on top of the
-    aging-QB discount.
-
-    Combined "true gap" Cam owes vs. face KTC ≈ Mayfield discount + |adj
-    overpay| ≈ 2,120 + 4,400 ≈ 6,500 KTC ≈ 2027 1st + 2027 2nd.
+    With v2 (dilution + all-chips isolation), the adjusted delta should
+    sit in a "needs ≈ a 2026 1st + some change" range.
     """
     fannin = 4881
-    mayfield_discounted = 2589   # 4709 * 0.55 (age 31)
+    mayfield_discounted = 2589
     jsn = 9917
 
-    raw_delta = jsn - (fannin + mayfield_discounted)   # = 2447 (positive: cam wins raw)
+    raw_delta = jsn - (fannin + mayfield_discounted)   # = +2447 (cam wins raw)
     adjusted, adj = apply_adjustment_to_delta(
         raw_delta=raw_delta,
         send_values=[fannin, mayfield_discounted],
         receive_values=[jsn],
     )
     assert adj.favors == "receive"
-    # After stud premium, cam owes a meaningful chunk of additional value —
-    # at least the value of one rookie 2027 1st (~4K), but not so much that
-    # it's wildly out of band (capped at ~7K to catch over-tuning regressions).
-    assert -7000 <= adjusted <= -3500, (
-        f"Expected adjusted delta in [-7000, -3500] (≈1st owed on top of the "
-        f"implicit Mayfield discount), got {adjusted}"
+    # v2 model produces a deeper deficit than v1 — match the new range.
+    assert -10000 <= adjusted <= -3500, (
+        f"Expected adjusted delta in [-10000, -3500] for Fannin+Mayfield→JSN, got {adjusted}"
     )
 
 
-def test_regression_scrub_package_for_elite_stud_is_not_fair():
+def test_regression_scrub_package_for_elite_stud_is_clearly_unfair():
     """Sending only weak filler for an elite stud must NOT score as fair.
 
-    Pre-tuning bug: the algorithm would credit a large stud premium that
-    offset the raw deficit, making 2K-of-scrub-for-10K-elite score like
-    a fair small overpay. After the May 2026 fix, the adjusted delta
-    should be deeply negative (the trade isn't anywhere near fair).
+    The raw delta is +7700 (you "win" the face value swap), but the
+    adjustment should make the effective delta deeply negative because
+    the trade would never transact at this ratio.
     """
-    target = 10000   # elite RB1
-    scrub_a = 700
-    scrub_b = 1600
-
-    raw_delta = target - (scrub_a + scrub_b)   # +7700, you "win" raw
+    target = 10000
+    raw_delta = target - (700 + 1600)   # +7700
     adjusted, adj = apply_adjustment_to_delta(
         raw_delta=raw_delta,
-        send_values=[scrub_a, scrub_b],
+        send_values=[700, 1600],
         receive_values=[target],
     )
-    # After premium, you should still be "winning" raw — but the trade
-    # is so wildly underpriced it would never transact. Premium should
-    # at LEAST eat most of the raw win, leaving < 0 effective.
-    assert adjusted < 0, (
-        f"Scrub-for-elite must net negative after premium; got {adjusted}"
+    # v2 should make this clearly negative — at minimum -1000
+    assert adjusted < -1000, (
+        f"Scrub-for-elite must net deeply negative after v2 premium; got {adjusted}"
     )
 
 
-def test_regression_premium_grows_with_quality_gap():
-    """Same target, weaker filler => bigger premium owed."""
-    target = 9000
-    _, adj_weak = apply_adjustment_to_delta(
-        raw_delta=0,
-        send_values=[1000, 500],   # huge gap
+def test_regression_ten_for_one_makes_3rd_round_for_hopkins_a_joke():
+    """The KTC docs example: 12 third-round picks ≠ DeAndre Hopkins.
+
+    Stand in: Hopkins-tier asset at 7500 KTC vs ten 800 KTC picks.
+    With v2, this MUST score as deeply unfair (massive negative delta).
+    """
+    target = 7500
+    raw_delta = target - (800 * 10)   # = -500 (filler totals more than face)
+    adjusted, adj = apply_adjustment_to_delta(
+        raw_delta=raw_delta,
+        send_values=[800] * 10,
         receive_values=[target],
     )
-    _, adj_strong = apply_adjustment_to_delta(
-        raw_delta=0,
-        send_values=[7000, 2000],   # small gap
-        receive_values=[target],
+    # v2 must punish this severely — needs many thousands MORE in value
+    assert adjusted < -10000, (
+        f"12-for-1 filler-for-Hopkins must be clearly unfair; got {adjusted}"
     )
-    assert adj_weak.adjustment > adj_strong.adjustment
+
+
+# ---------------------------------------------------------------------------
+# suggest_evening_piece — KTC-style missing piece
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("amount,expected_keyword", [
+    (0, "balanced"),
+    (200, "throw-in"),
+    (1400, "2nd-round rookie"),
+    (4500, "Mid 1st"),
+    (7000, "WR2 / RB2"),
+    (50000, "stud-tier"),
+])
+def test_suggest_evening_piece_returns_recognizable_label(amount, expected_keyword):
+    out = suggest_evening_piece(amount)
+    assert expected_keyword in out
+
+
+def test_suggest_evening_piece_handles_negative_input():
+    assert "balanced" in suggest_evening_piece(-500)
 
 
 # ---------------------------------------------------------------------------
 # ValueAdjustment dataclass surface
 # ---------------------------------------------------------------------------
 
-def test_value_adjustment_includes_rationale():
+def test_value_adjustment_breakdown_fields_populated():
     adj = compute_value_adjustment(
         send_values=[3000, 2000],
         receive_values=[8500],
     )
-    assert adj.rationale != ""
-    assert "tier premium" in adj.rationale
-    assert "quality gap" in adj.rationale
+    # Components sum to total
+    assert (
+        adj.spot_component + adj.tier_premium + adj.isolation_gap + adj.dilution
+        == adj.adjustment
+    )
 
 
 def test_value_adjustment_top_stud_value_is_max_of_all():
@@ -318,3 +385,12 @@ def test_value_adjustment_top_stud_value_is_max_of_all():
         receive_values=[5000, 4000],
     )
     assert adj.top_stud_value == 9500
+
+
+def test_rationale_mentions_all_four_components():
+    adj = compute_value_adjustment(
+        send_values=[3000, 2000],
+        receive_values=[8500],
+    )
+    for word in ("Spot", "tier premium", "isolation gap", "dilution"):
+        assert word in adj.rationale
