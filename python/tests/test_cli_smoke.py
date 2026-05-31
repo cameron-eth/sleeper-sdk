@@ -27,6 +27,7 @@ EXPECTED_SUBCOMMANDS = [
     "send-trade",
     "gm-mode",
     "proposed-trades",   # added May 2026
+    "trade-partners",    # added May 2026
 ]
 
 
