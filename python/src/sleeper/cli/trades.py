@@ -48,7 +48,7 @@ def cmd_trade_check(args: argparse.Namespace) -> None:
     print()
     ktc_players = fetch_ktc_players()
 
-    def resolve_players(names: list[str]) -> list:
+    def resolve_players(names: list[str]) -> tuple[list, list[str]]:
         found = []
         not_found = []
         for name in names:

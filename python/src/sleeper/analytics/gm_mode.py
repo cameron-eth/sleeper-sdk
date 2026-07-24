@@ -208,7 +208,7 @@ def _classify_archetype(
             "REBUILDING",
             0.85,
             f"Rank {v} in value"
-            + (f", {young_asset_pct*100:.0f}% of value in players under 26" if young_heavy else "")
+            + (f", {(young_asset_pct or 0)*100:.0f}% of value in players under 26" if young_heavy else "")
             + ". Accumulating future assets for a multi-year window."
         )
 
@@ -328,7 +328,7 @@ def generate_gm_report(
 
     # Get avg starter age (top QB + top 2 RB + top 3 WR + top TE by value)
     starter_ages = []
-    by_pos_players = {"QB": [], "RB": [], "WR": [], "TE": []}
+    by_pos_players: dict[str, list[tuple]] = {"QB": [], "RB": [], "WR": [], "TE": []}
     for pid in (my_roster.players or []):
         p = sleeper_players.get(pid)
         if p and p.position in by_pos_players:

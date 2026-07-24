@@ -69,7 +69,7 @@ class HttpClient:
                 raise SleeperApiError(response.status_code, f"GET {path}: {response.text}")
 
             except SleeperApiError as e:
-                if e.status_code < 500:
+                if e.status_code is not None and e.status_code < 500:
                     raise
                 last_error = e
                 if attempt < MAX_RETRIES - 1:

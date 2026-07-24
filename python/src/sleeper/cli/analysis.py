@@ -634,10 +634,14 @@ def cmd_proposed_trades(args) -> None:
             rnd: int = 0
             receiver: int | None = None
             if isinstance(dp, dict):
+                owner_raw = dp.get("owner_id")
+                rnd_raw = dp.get("round")
+                if owner_raw is None or rnd_raw is None:
+                    continue
                 try:
-                    receiver = int(dp.get("owner_id"))
+                    receiver = int(owner_raw)
                     season = str(dp.get("season"))
-                    rnd = int(dp.get("round"))
+                    rnd = int(rnd_raw)
                 except (TypeError, ValueError):
                     continue
             elif isinstance(dp, str):

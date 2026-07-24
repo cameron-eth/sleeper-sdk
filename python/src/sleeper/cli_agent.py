@@ -124,12 +124,16 @@ def _ktc_lookup_for_context(ctx: dict, format_: str = "sf") -> dict:
         sleeper_players = client.sync(client.get_all_players())
         ktc = fetch_ktc_players()
         ktc_map = build_ktc_to_sleeper_map(ktc, sleeper_players)
-        # ktc_map is {sleeper_id: ktc_record}; pull the requested format value.
-        out = {}
-        for sid, rec in ktc_map.items():
-            v = (rec.get("value_sf") if format_ == "sf" else rec.get("value_1qb"))
-            if v is not None:
-                out[sid] = int(v)
+        # ktc_map is {ktc_id: sleeper_id}; pull the requested format value
+        # off each KTCPlayer that mapped to a Sleeper player.
+        out: dict[str, int] = {}
+        for p in ktc:
+            sid = ktc_map.get(p.ktc_id)
+            if sid is None:
+                continue
+            val = p.superflex.value if format_ == "sf" else p.one_qb.value
+            if val:
+                out[sid] = int(val)
         return out
     except Exception:
         return {}

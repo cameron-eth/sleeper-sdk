@@ -8,6 +8,7 @@ on:
 
 permissions:
   contents: write
+  pull-requests: write
 
 jobs:
   snapshot:
@@ -29,7 +30,12 @@ jobs:
         working-directory: python
         run: python scripts/snapshot_ktc.py --out-dir ../data/ktc
 
-      - name: Commit snapshot
+      # main is protected (ruleset "protect-main" requires a PR), so the bot
+      # commits to a dated branch and auto-merges a PR instead of pushing to
+      # main directly. Both operations work with the default GITHUB_TOKEN.
+      - name: Commit + auto-merge snapshot
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
@@ -39,5 +45,13 @@ jobs:
             exit 0
           fi
           DATE=$(date -u +%Y-%m-%d)
+          BRANCH="ktc-snapshot-${DATE}-${GITHUB_RUN_ID}"
+          git checkout -b "$BRANCH"
           git commit -m "ktc: snapshot ${DATE}"
-          git push
+          git push origin "$BRANCH"
+          gh pr create \
+            --base main \
+            --head "$BRANCH" \
+            --title "ktc: snapshot ${DATE}" \
+            --body "Automated daily KTC snapshot for ${DATE}."
+          gh pr merge "$BRANCH" --squash --delete-branch

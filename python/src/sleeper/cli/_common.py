@@ -267,6 +267,8 @@ def _lazy_load_analytics(module_name: str):
     path = os.path.join(pkg_root, "analytics", f"{module_name}.py")
     spec_name = f"_sleeper_lazy_{module_name}"
     spec = importlib.util.spec_from_file_location(spec_name, path)
+    if spec is None or spec.loader is None:
+        raise ImportError(f"Cannot load analytics module {module_name!r} from {path}")
     mod = importlib.util.module_from_spec(spec)
     _sys.modules[spec_name] = mod
     spec.loader.exec_module(mod)

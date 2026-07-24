@@ -14,6 +14,7 @@ All commands here are read-only and require no auth.
 from __future__ import annotations
 
 import argparse
+import sys
 
 from sleeper.cli._common import (
     _build_sleeper_to_ktc,
@@ -548,17 +549,17 @@ def cmd_ktc_trend(args: argparse.Namespace) -> None:
         headers = ["Player", "Pos", "Team", "Start", "End", "Delta", "%"]
         rows = []
         attr = "sf_value" if args.format == "sf" else "oqb_value"
-        for trend, delta in movers:
-            start = getattr(trend.points[0], attr)
-            end = getattr(trend.points[-1], attr)
-            pct = (delta / start * 100) if start else 0
+        for mv_trend, mv_delta in movers:
+            start = getattr(mv_trend.points[0], attr)
+            end = getattr(mv_trend.points[-1], attr)
+            pct = (mv_delta / start * 100) if start else 0
             rows.append([
-                trend.name,
-                trend.position,
-                trend.team or "FA",
+                mv_trend.name,
+                mv_trend.position,
+                mv_trend.team or "FA",
                 f"{start:,}",
                 f"{end:,}",
-                f"{delta:+d}",
+                f"{mv_delta:+d}",
                 f"{pct:+.1f}%",
             ])
         print(_format_table(headers, rows))

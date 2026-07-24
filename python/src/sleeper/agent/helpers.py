@@ -53,7 +53,7 @@ async def _resolve_user_and_league(
         if not matched:
             raise ValueError(
                 f"No league matches {league_filter!r}. Available: "
-                + ", ".join(lg.name for lg in leagues)
+                + ", ".join(lg.name or "?" for lg in leagues)
             )
         league = matched[0]
     elif len(leagues) == 1:
@@ -61,7 +61,7 @@ async def _resolve_user_and_league(
     else:
         raise ValueError(
             "Multiple leagues; pass league_filter. Available: "
-            + ", ".join(lg.name for lg in leagues)
+            + ", ".join(lg.name or "?" for lg in leagues)
         )
     return user, league, leagues
 
@@ -150,7 +150,7 @@ async def abuild_context(
                         "my_projected_points": getattr(mine, "points", None),
                         "opponent_roster_id": opp.roster_id,
                         "opponent_owner_display_name": (
-                            getattr(u_by_id.get(opp_roster.owner_id) if opp_roster else None, "display_name", None)
+                            getattr(u_by_id.get(opp_roster.owner_id or "") if opp_roster else None, "display_name", None)
                         ),
                         "opp_starters": [expand_player(p) for p in (opp.starters or []) if p and p != "0"],
                         "opp_projected_points": getattr(opp, "points", None),
@@ -311,13 +311,13 @@ def optimal_lineup(
     eligible = [p for p in players
                 if p.get("position") and p.get("status") in (None, "Active")]
 
-    chosen: list[str] = []
+    chosen: list[Optional[str]] = []
     by_slot: list[dict] = []
     used: set[str] = set()
 
     # Sort by projection desc; greedy fill
     def proj(p: dict) -> float:
-        return projections.get(p.get("player_id"), 0.0)
+        return projections.get(p.get("player_id") or "", 0.0)
 
     for slot in roster_positions or []:
         slot_u = slot.upper()
@@ -385,7 +385,7 @@ def check_lineup_health(
     """
     risks: list[dict] = []
     starters = roster_view.get("starters") or []
-    slots = roster_positions or [None] * len(starters)
+    slots: list[Optional[str]] = list(roster_positions) if roster_positions else [None] * len(starters)
 
     for i, p in enumerate(starters):
         slot = slots[i] if i < len(slots) else None
@@ -497,7 +497,7 @@ def rank_waiver_targets(
             "team": p.get("team"),
             "age": p.get("age"),
             "ktc": ktc,
-            "_pri": pri.get(p.get("position"), 999),
+            "_pri": pri.get(p.get("position") or "", 999),
         })
     rows.sort(key=lambda x: (x["_pri"], -x["ktc"], x.get("age") or 99))
     for r in rows:

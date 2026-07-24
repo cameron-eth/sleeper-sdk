@@ -22,6 +22,7 @@ dev = [
   "pytest>=7.0.0",
   "pytest-asyncio>=0.21.0",
   "nflreadpy>=0.1.0",
+  "mypy>=1.8.0",
 ]
 
 [project.scripts]
@@ -32,3 +33,13 @@ packages = ["src/sleeper"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
+
+[tool.mypy]
+python_version = "3.10"
+files = ["src/sleeper"]
+ignore_missing_imports = true
+# Pragmatic baseline: type-check what has annotations without forcing a
+# full annotation sweep of the existing code.
+check_untyped_defs = false
+warn_unused_ignores = true
+no_implicit_optional = true
