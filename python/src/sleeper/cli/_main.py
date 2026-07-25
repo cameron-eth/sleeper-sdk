@@ -39,6 +39,11 @@ from sleeper.cli.values import (
 
 
 def main() -> None:
+    # Load .env (if present) so SLEEPER_TOKEN etc. are available before any
+    # command reads os.environ. Real env vars still take precedence.
+    from sleeper.config import load_env
+    load_env()
+
     parser = argparse.ArgumentParser(
         prog="sleeper",
         description="Sleeper Fantasy Football SDK CLI",
