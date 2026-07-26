@@ -290,17 +290,31 @@ def apply_adjustment_to_delta(
     Returns:
         (adjusted_delta, ValueAdjustment)
 
-    If the user is RECEIVING the stud (favors="receive"), the adjustment
-    is owed ON TOP of face value — subtract from the delta (worse for you).
-    If the user is SENDING the stud (favors="send"), the partner owes the
-    premium — add to the delta (better for you).
+    This works in NET-VALUE space (positive = you come out ahead), which is
+    the mirror of the overpay space used by `find_trades_engine`. The premium
+    says the concentrated stud is worth MORE than its face KTC, so:
+
+      * Stud on your RECEIVE side  -> you acquired something worth above face
+        -> ``raw_delta + adjustment``.
+      * Stud on your SEND side     -> you gave away something worth above face
+        -> ``raw_delta - adjustment``.
+
+    Worked example (KTC's own): you trade Hopkins for 12 third-rounders whose
+    face values sum to exactly Hopkins'. ``raw_delta`` is 0, but Hopkins is
+    genuinely worth more than that pile, so the deal is bad for you by the
+    premium — hence minus when the stud leaves your roster.
+
+    NOTE: these signs were inverted before 2026-07, which made "give up the
+    stud, take back two lesser pieces" score as a *gain*. It surfaced as
+    trades like McMillan (6,392) for Mayfield + Green (5,871) being reported
+    as +872 in your favor when it is really about -1,900.
     """
     adj = compute_value_adjustment(send_values, receive_values)
 
     if adj.favors == "receive":
-        adjusted = raw_delta - adj.adjustment
-    elif adj.favors == "send":
         adjusted = raw_delta + adj.adjustment
+    elif adj.favors == "send":
+        adjusted = raw_delta - adj.adjustment
     else:
         adjusted = raw_delta
 

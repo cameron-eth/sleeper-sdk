@@ -195,22 +195,51 @@ def test_favors_send_when_you_consolidate_the_stud_out():
 # Sign correctness for apply_adjustment_to_delta
 # ---------------------------------------------------------------------------
 
-def test_apply_receive_stud_subtracts_premium():
-    """Acquiring the stud: you owe the premium → adjusted delta drops."""
-    raw = 6151 - 9408                       # receive − send (you overpay)
+def test_apply_receive_stud_credits_premium():
+    """Acquiring the stud: it's worth above face, so you got more than the
+    raw subtraction suggests."""
+    raw = 6151 - 9408                       # receive − send
     adjusted, adj = apply_adjustment_to_delta(raw, [4704, 4704], [6151])
     assert adj.favors == "receive"
+    assert adjusted == raw + adj.adjustment
+    assert adjusted > raw
+
+
+def test_apply_send_stud_charges_premium():
+    """Giving up the stud: you shipped something worth above face, so the
+    deal is worse for you than the raw subtraction suggests."""
+    raw = 8500 - 9000                       # receive package − send stud
+    adjusted, adj = apply_adjustment_to_delta(raw, [9000], [5000, 3500])
+    assert adj.favors == "send"
     assert adjusted == raw - adj.adjustment
     assert adjusted < raw
 
 
-def test_apply_send_stud_adds_premium():
-    """Giving up the stud: partner owes you → adjusted delta rises."""
-    raw = 8500 - 9000                       # receive package − send stud
-    adjusted, adj = apply_adjustment_to_delta(raw, [9000], [5000, 3500])
+def test_hopkins_case_giving_the_stud_at_face_is_a_loss():
+    """KTC's own example: trading the stud for a pile whose face values sum
+    to exactly his is NOT break-even — it's a loss by the premium.
+
+    Regression guard for the pre-2026-07 sign inversion, which scored
+    'give up the stud, take back lesser pieces' as a gain.
+    """
+    stud = 9000
+    pile = [1500] * 6                       # sums to exactly 9000
+    raw = sum(pile) - stud                  # == 0
+    assert raw == 0
+    adjusted, adj = apply_adjustment_to_delta(raw, [stud], pile)
     assert adj.favors == "send"
-    assert adjusted == raw + adj.adjustment
-    assert adjusted > raw
+    assert adjusted < 0                     # giving the stud at face LOSES
+    assert adjusted == -adj.adjustment
+
+
+def test_consolidating_into_a_stud_at_face_is_a_gain():
+    """The mirror image: acquiring the stud for a face-equal pile is good."""
+    stud = 9000
+    pile = [1500] * 6
+    raw = stud - sum(pile)                  # == 0, from acquirer's view
+    adjusted, adj = apply_adjustment_to_delta(raw, pile, [stud])
+    assert adj.favors == "receive"
+    assert adjusted > 0
 
 
 def test_apply_even_trade_no_change():

@@ -50,9 +50,21 @@ HORIZON_SCALE = 4.0
 PICK_HORIZON = 1.0
 
 # Strength of the window re-weighting and the multiplier clamp.
-ALPHA = 0.35
-MULT_MIN = 0.60
-MULT_MAX = 1.40
+#
+# CRITICAL: contextual value is a PREFERENCE, not a currency. You cannot spend
+# it. If a trade sheds real market value, your tradeable capital is
+# permanently smaller and the "contextual gain" is imaginary. So the window
+# re-weighting must stay small enough that it breaks ties between
+# market-fair trades rather than justifying market-losing ones.
+#
+# v1 shipped ALPHA=0.35 with a [0.60, 1.40] clamp, which let two teams value
+# the same asset 108% apart (1.40/0.65 = 2.08x). That rationalized handing
+# elite youth to a rival for aging filler while eating a 3,000+ KTC loss.
+# Real dynasty window effects are on the order of 10-20%, so the spread is
+# now capped near 30% end-to-end.
+ALPHA = 0.12
+MULT_MIN = 0.88
+MULT_MAX = 1.12
 
 
 def _clamp(x: float, lo: float, hi: float) -> float:
@@ -79,3 +91,53 @@ def window_multiplier(asset: Asset, window: float) -> float:
 def contextual_value(asset: Asset, window: float, fmt: str = "sf") -> int:
     """Base value re-weighted for a holder at contention `window` ∈ [−1, +1]."""
     return int(round(asset.base_value(fmt) * window_multiplier(asset, window)))
+
+
+# ---------------------------------------------------------------------------
+# Liquidity — low-value assets are not real trade currency
+# ---------------------------------------------------------------------------
+
+# Fraction of face value the very cheapest assets actually command in a trade.
+# Nobody gives up real value for deep-bench pieces; they ride along as
+# throw-ins. Without this, a package of fodder sums to a headline KTC number
+# that no owner would ever honor, and the finder proposes handing over a real
+# asset for a pile of names.
+FODDER_FLOOR = 0.35
+
+# Default line below which an asset reads as fodder. Callers should pass the
+# league's actual mid-2nd-round pick value instead — a 2nd is the practical
+# floor of "an asset someone will actually negotiate over".
+DEFAULT_FODDER_LINE = 3400
+
+
+def liquidity_factor(value: int, fodder_line: int = DEFAULT_FODDER_LINE) -> float:
+    """How much of an asset's face value survives contact with the market.
+
+    Assets at or above `fodder_line` (roughly a mid 2nd-round pick) trade at
+    face. Below it, value ramps down linearly toward FODDER_FLOOR, because
+    those players are depth/throw-ins rather than things a counterparty will
+    pay for. Three 1,200-value bench pieces are not a 3,600-value asset.
+    """
+    if fodder_line <= 0 or value >= fodder_line:
+        return 1.0
+    if value <= 0:
+        return FODDER_FLOOR
+    r = value / fodder_line
+    return FODDER_FLOOR + (1.0 - FODDER_FLOOR) * r
+
+
+def tradeable_value(
+    asset: Asset,
+    fmt: str = "sf",
+    fodder_line: int = DEFAULT_FODDER_LINE,
+) -> int:
+    """Face value discounted for market liquidity — what it's really worth
+    as *currency* in a trade, as opposed to what a ranking site lists it at.
+
+    Draft picks are exempt: a pick is a clean, universally-priced asset that
+    every owner will transact on, regardless of where it sits on the board.
+    """
+    v = asset.base_value(fmt)
+    if asset.is_pick:
+        return v
+    return int(round(v * liquidity_factor(v, fodder_line)))

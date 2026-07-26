@@ -148,3 +148,54 @@ def test_contextual_value_respects_format():
               base_sf=8000, base_1qb=6000, age=24)
     assert contextual_value(a, 0.0, "sf") == 8000
     assert contextual_value(a, 0.0, "1qb") == 6000
+
+
+# ---------------------------------------------------------------------------
+# Liquidity — fodder is not trade currency
+# ---------------------------------------------------------------------------
+
+from sleeper.analytics.contextual_value import (  # noqa: E402
+    DEFAULT_FODDER_LINE,
+    FODDER_FLOOR,
+    liquidity_factor,
+    tradeable_value,
+)
+
+
+def _P(name, pos, sf, age=25):
+    return Asset(kind="player", id=name, name=name, position=pos,
+                 base_sf=sf, base_1qb=sf, age=age)
+
+
+def _PICK(name, sf):
+    return Asset(kind="pick", id=name, name=name, position="PICK",
+                 base_sf=sf, base_1qb=sf)
+
+
+def test_assets_at_or_above_fodder_line_trade_at_face():
+    assert liquidity_factor(DEFAULT_FODDER_LINE) == 1.0
+    assert liquidity_factor(DEFAULT_FODDER_LINE + 5000) == 1.0
+
+
+def test_fodder_is_discounted_and_monotonic():
+    """Cheaper assets keep progressively less of their face value."""
+    factors = [liquidity_factor(v) for v in range(0, DEFAULT_FODDER_LINE, 200)]
+    assert factors == sorted(factors)
+    assert all(FODDER_FLOOR <= f <= 1.0 for f in factors)
+    assert factors[0] == pytest.approx(FODDER_FLOOR)
+
+
+def test_pile_of_fodder_does_not_equal_a_real_asset():
+    """Three cheap bench pieces must not out-trade one quality player."""
+    real = _P("Quality", "WR", 6000)
+    pile = [_P(f"Depth{i}", "WR", 2100) for i in range(3)]
+    assert sum(p.base_sf for p in pile) > real.base_sf          # face says pile wins
+    assert sum(tradeable_value(p) for p in pile) < tradeable_value(real)  # market says no
+
+
+def test_picks_are_exempt_from_the_fodder_discount():
+    """A late pick is still a clean, universally-priced asset."""
+    late = _PICK("2028 Late 4th", 1364)
+    assert tradeable_value(late) == 1364
+    player = _P("Deep Bench", "TE", 1364)
+    assert tradeable_value(player) < 1364

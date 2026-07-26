@@ -35,16 +35,30 @@ from itertools import combinations
 from typing import Iterable, Optional, Sequence
 
 from sleeper.analytics.base_value import Asset
-from sleeper.analytics.contextual_value import contextual_value, horizon_score
+from sleeper.analytics.contextual_value import (
+    DEFAULT_FODDER_LINE,
+    contextual_value,
+    horizon_score,
+    tradeable_value,
+)
 from sleeper.analytics.league_model import LeagueModel, TeamProfile
 from sleeper.analytics.value_adjustment import apply_adjustment_to_delta
 
 # Market-realism band on the raw (adjusted) KTC delta, from the proposing
 # side's perspective. Negative = you give up more market value than you get.
-# A little generosity is how trades actually get accepted; a lot is a fleece
-# that will be laughed at.
-MARKET_FLOOR = -3500
-MARKET_CEIL = 3500
+#
+# This is the PRIMARY guardrail, not a formality. Market value is the only
+# real currency: value shed here is gone permanently, while "contextual gain"
+# is just a preference (see contextual_value.ALPHA). The band must therefore
+# be tight enough that window fit can only ever break ties between roughly
+# fair trades.
+#
+# v1 shipped +/-3500, which was wider than the entire contextual swing and so
+# gated nothing -- it green-lit shipping elite youth for aging filler at a
+# 3,400 KTC loss. A modest sweetener is how deals actually close; a multi-
+# thousand-point giveaway is a fleece.
+MARKET_FLOOR = -900
+MARKET_CEIL = 900
 
 # Minimum contextual gain (per side) for a trade to count as mutually good.
 MIN_SIDE_GAIN = 150
@@ -87,10 +101,20 @@ def market_delta(
     send: Sequence[Asset],
     receive: Sequence[Asset],
     fmt: str = "sf",
+    fodder_line: int = DEFAULT_FODDER_LINE,
 ) -> int:
-    """Raw market delta from the sender's perspective, consolidation-adjusted."""
-    send_vals = [a.base_value(fmt) for a in send]
-    recv_vals = [a.base_value(fmt) for a in receive]
+    """Market delta from the sender's perspective, in real trade currency.
+
+    Two corrections separate this from a naive KTC subtraction:
+
+    * **Liquidity** — assets below roughly a 2nd-round pick are discounted,
+      because deep-bench players are throw-ins, not currency. Otherwise a
+      stack of fodder sums to a headline number no owner would honor.
+    * **Consolidation** — the value-adjustment premium prices the fact that
+      one stud is worth more than the sum of the lesser pieces it fetches.
+    """
+    send_vals = [tradeable_value(a, fmt, fodder_line) for a in send]
+    recv_vals = [tradeable_value(a, fmt, fodder_line) for a in receive]
     raw = sum(recv_vals) - sum(send_vals)
     adjusted, _ = apply_adjustment_to_delta(raw, send_vals, recv_vals)
     return adjusted
@@ -231,5 +255,12 @@ def find_mutual_trades(
                     model_version=model_version,
                 ))
 
-    proposals.sort(key=lambda p: -(p.mutual_gain * (0.5 + p.acceptance)))
+    # Rank by mutual contextual gain, weighted by how likely the partner is to
+    # engage, and tie-broken toward better market terms for us. The market term
+    # is deliberately additive and modest: the hard gate above already ensures
+    # every survivor is close to fair, so this only sorts within that band
+    # rather than trading real value for preference.
+    proposals.sort(
+        key=lambda p: -(p.mutual_gain * (0.5 + p.acceptance) + 0.5 * p.market_delta)
+    )
     return proposals[:top]
