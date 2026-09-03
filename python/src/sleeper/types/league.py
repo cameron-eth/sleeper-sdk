@@ -24,6 +24,9 @@ class Roster(BaseModel):
     players: list[str] = []
     reserve: list[str] | None = None
     taxi: list[str] | None = None
+    co_owners: list[str] | None = None
+    keepers: list[str] | None = None
+    metadata: dict[str, Any] | None = None
     settings: RosterSettings | None = None
 
     @property
