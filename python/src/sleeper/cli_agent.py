@@ -232,8 +232,15 @@ def cmd_inbox(args) -> None:
         my_rid = _resolve_my_roster_id(ctx)
         ktc = _ktc_lookup_for_context(ctx, args.format)
 
-        with SleeperClient() as c:
-            sleeper_players = c.sync(c.get_all_players())
+        c = SleeperClient()
+
+        async def _fetch_players():
+            try:
+                return await c.get_all_players()
+            finally:
+                await c.close()
+
+        sleeper_players = c.sync(_fetch_players())
 
         with SleeperAuthClient() as auth:
             trades = auth.get_inbox(ctx["league"]["league_id"], my_roster_id=my_rid)
@@ -251,8 +258,15 @@ def cmd_outbox(args) -> None:
         ctx = build_context(args.username, args.league)
         my_rid = _resolve_my_roster_id(ctx)
         ktc = _ktc_lookup_for_context(ctx, args.format)
-        with SleeperClient() as c:
-            sleeper_players = c.sync(c.get_all_players())
+        c = SleeperClient()
+
+        async def _fetch_players():
+            try:
+                return await c.get_all_players()
+            finally:
+                await c.close()
+
+        sleeper_players = c.sync(_fetch_players())
         with SleeperAuthClient() as auth:
             trades = auth.get_outbox(ctx["league"]["league_id"], my_roster_id=my_rid)
         rows = summarize_inbox(trades, my_roster_id=my_rid,
@@ -284,9 +298,17 @@ def cmd_waivers(args) -> None:
         from sleeper.client import SleeperClient
         ctx = build_context(args.username, args.league)
         # Build FA pool: all players minus everyone rostered.
-        with SleeperClient() as c:
-            sleeper_players = c.sync(c.get_all_players())
-            rosters = c.sync(c.leagues.get_rosters(ctx["league"]["league_id"]))
+        c = SleeperClient()
+
+        async def _fetch_pool():
+            try:
+                players = await c.get_all_players()
+                rosters = await c.leagues.get_rosters(ctx["league"]["league_id"])
+                return players, rosters
+            finally:
+                await c.close()
+
+        sleeper_players, rosters = c.sync(_fetch_pool())
         rostered = set()
         for r in rosters:
             for pid in (r.players or []):
