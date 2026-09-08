@@ -23,6 +23,7 @@ class Roster(BaseModel):
     starters: list[str] = []
     players: list[str] = []
     reserve: list[str] | None = None
+    taxi: list[str] | None = None
     settings: RosterSettings | None = None
 
     @property
