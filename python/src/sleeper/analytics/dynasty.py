@@ -14,7 +14,7 @@ class DraftMapEntry:
     pick_no: int
     round: int
     draft_slot: Optional[int] = None
-    roster_id: Optional[str] = None
+    roster_id: Optional[int] = None  # roster_id (int), mirrors DraftPick.roster_id
     picked_by: Optional[str] = None
     first_name: Optional[str] = None
     last_name: Optional[str] = None
