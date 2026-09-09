@@ -4,6 +4,7 @@ from __future__ import annotations
 import base64
 import json
 import os
+import re
 import time
 from dataclasses import dataclass
 from typing import Any, Optional
@@ -60,6 +61,25 @@ def _normalize_errors(errs) -> list:
     if isinstance(errs, list):
         return [e if isinstance(e, dict) else {"message": str(e)} for e in errs]
     return [{"message": str(errs)}]
+
+
+def _snowflake(value: str | int) -> str:
+    """Reject anything that is not a numeric Sleeper id before interpolating GraphQL."""
+    s = str(value)
+    if not re.fullmatch(r"[0-9]+", s):
+        raise ValueError(f"invalid sleeper id: {value!r}")
+    return s
+
+
+def _player_ids(ids: list[str]) -> list[str]:
+    """Reject player ids that are not alphanumeric (digits or DEF codes like DEN)."""
+    out: list[str] = []
+    for pid in ids:
+        s = str(pid)
+        if not re.fullmatch(r"[A-Za-z0-9]+", s):
+            raise ValueError(f"invalid player_id: {pid!r}")
+        out.append(s)
+    return out
 
 
 def inspect_token(jwt: str) -> TokenInfo:
@@ -372,27 +392,42 @@ class SleeperAuthClient:
         starters: list[str],
         *,
         leg: int | None = None,
+        round: int | None = None,
     ) -> dict:
-        """Set the starters list for a roster. Order must match league
-        roster_positions slots (excluding BN/IR/TAXI)."""
-        query = """
-        mutation update_roster_starters(
-          $league_id: Snowflake!, $roster_id: Int!, $starters: [String]!, $leg: Int
-        ) {
-          update_roster_starters(
-            league_id: $league_id, roster_id: $roster_id, starters: $starters, leg: $leg
-          ) {
-            roster_id starters players reserve taxi
-          }
-        }
+        """Set the weekly lineup via ``update_matchup_leg``.
+
+        In-season Sleeper no longer exposes ``update_roster_starters``. The web
+        client inlines ``league_id`` / ``roster_id`` / ``leg`` / ``round`` /
+        ``starters`` and only uses a variable for ``starters_games``. ``leg`` and
+        ``round`` are the current NFL week for regular-season matchups.
         """
-        data = self.gql("update_roster_starters", query, {
-            "league_id": league_id,
-            "roster_id": roster_id,
-            "starters": starters,
-            "leg": leg,
-        })
-        return data.get("update_roster_starters") or {}
+        week = int(round if round is not None else (leg if leg is not None else 1))
+        matchup_leg = int(leg if leg is not None else week)
+        safe_league = _snowflake(league_id)
+        safe_roster = int(roster_id)
+        safe_starters = json.dumps(_player_ids(starters))
+        query = f"""
+        mutation update_matchup_leg($starters_games: Map) {{
+          update_matchup_leg(
+            league_id: "{safe_league}",
+            roster_id: {safe_roster},
+            leg: {matchup_leg},
+            round: {week},
+            starters: {safe_starters},
+            starters_games: $starters_games
+          ) {{
+            league_id
+            leg
+            matchup_id
+            roster_id
+            round
+            starters
+            players
+          }}
+        }}
+        """
+        data = self.gql("update_matchup_leg", query, {})
+        return data.get("update_matchup_leg") or {}
 
     def add_drop(
         self,

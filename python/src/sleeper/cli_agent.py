@@ -232,8 +232,8 @@ def cmd_inbox(args) -> None:
         my_rid = _resolve_my_roster_id(ctx)
         ktc = _ktc_lookup_for_context(ctx, args.format)
 
-        with SleeperClient() as c:
-            sleeper_players = c.sync(c.get_all_players())
+        c = SleeperClient()
+        sleeper_players = c.sync(c.get_all_players())
 
         with SleeperAuthClient() as auth:
             trades = auth.get_inbox(ctx["league"]["league_id"], my_roster_id=my_rid)
@@ -251,8 +251,8 @@ def cmd_outbox(args) -> None:
         ctx = build_context(args.username, args.league)
         my_rid = _resolve_my_roster_id(ctx)
         ktc = _ktc_lookup_for_context(ctx, args.format)
-        with SleeperClient() as c:
-            sleeper_players = c.sync(c.get_all_players())
+        c = SleeperClient()
+        sleeper_players = c.sync(c.get_all_players())
         with SleeperAuthClient() as auth:
             trades = auth.get_outbox(ctx["league"]["league_id"], my_roster_id=my_rid)
         rows = summarize_inbox(trades, my_roster_id=my_rid,
@@ -284,9 +284,11 @@ def cmd_waivers(args) -> None:
         from sleeper.client import SleeperClient
         ctx = build_context(args.username, args.league)
         # Build FA pool: all players minus everyone rostered.
-        with SleeperClient() as c:
-            sleeper_players = c.sync(c.get_all_players())
-            rosters = c.sync(c.leagues.get_rosters(ctx["league"]["league_id"]))
+        # SleeperClient only implements the async context manager protocol
+        # (__aenter__/__aexit__) — use the documented sync-shortcut pattern.
+        c = SleeperClient()
+        sleeper_players = c.sync(c.get_all_players())
+        rosters = c.sync(c.leagues.get_rosters(ctx["league"]["league_id"]))
         rostered = set()
         for r in rosters:
             for pid in (r.players or []):
@@ -402,12 +404,19 @@ def cmd_lineup_set(args) -> None:
         league_id = ctx["league"]["league_id"]
         roster_id = _resolve_my_roster_id(ctx)
         starters = [s.strip() for s in (args.starters or "").split(",") if s.strip()]
-        payload = {"league_id": league_id, "roster_id": roster_id, "starters": starters}
-        summary = f"Set {len(starters)} starters in {ctx['league']['name']} week {ctx.get('week')}"
+        week = int(ctx.get("week") or 1)
+        payload = {
+            "league_id": league_id,
+            "roster_id": roster_id,
+            "starters": starters,
+            "leg": week,
+            "round": week,
+        }
+        summary = f"Set {len(starters)} starters in {ctx['league']['name']} week {week}"
 
         def _do_write():
             with SleeperAuthClient() as auth:
-                return auth.set_starters(league_id, roster_id, starters)
+                return auth.set_starters(league_id, roster_id, starters, leg=week, round=week)
 
         return _exec_or_preview(args, command="lineup-set", payload=payload,
                                 summary=summary, executor=_do_write)
@@ -546,7 +555,13 @@ def cmd_execute(args) -> None:
                     return auth.accept_trade(p["league_id"], p["transaction_id"], p["leg"])
                 return auth.reject_trade(p["league_id"], p["transaction_id"], p["leg"])
             if cmd == "lineup-set":
-                return auth.set_starters(p["league_id"], p["roster_id"], p["starters"])
+                return auth.set_starters(
+                    p["league_id"],
+                    p["roster_id"],
+                    p["starters"],
+                    leg=p.get("leg"),
+                    round=p.get("round"),
+                )
             if cmd == "waiver-claim":
                 return auth.submit_waiver_claim(
                     p["league_id"], p["roster_id"],
