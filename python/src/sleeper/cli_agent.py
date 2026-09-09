@@ -404,12 +404,19 @@ def cmd_lineup_set(args) -> None:
         league_id = ctx["league"]["league_id"]
         roster_id = _resolve_my_roster_id(ctx)
         starters = [s.strip() for s in (args.starters or "").split(",") if s.strip()]
-        payload = {"league_id": league_id, "roster_id": roster_id, "starters": starters}
-        summary = f"Set {len(starters)} starters in {ctx['league']['name']} week {ctx.get('week')}"
+        week = int(ctx.get("week") or 1)
+        payload = {
+            "league_id": league_id,
+            "roster_id": roster_id,
+            "starters": starters,
+            "leg": week,
+            "round": week,
+        }
+        summary = f"Set {len(starters)} starters in {ctx['league']['name']} week {week}"
 
         def _do_write():
             with SleeperAuthClient() as auth:
-                return auth.set_starters(league_id, roster_id, starters)
+                return auth.set_starters(league_id, roster_id, starters, leg=week, round=week)
 
         return _exec_or_preview(args, command="lineup-set", payload=payload,
                                 summary=summary, executor=_do_write)
@@ -548,7 +555,13 @@ def cmd_execute(args) -> None:
                     return auth.accept_trade(p["league_id"], p["transaction_id"], p["leg"])
                 return auth.reject_trade(p["league_id"], p["transaction_id"], p["leg"])
             if cmd == "lineup-set":
-                return auth.set_starters(p["league_id"], p["roster_id"], p["starters"])
+                return auth.set_starters(
+                    p["league_id"],
+                    p["roster_id"],
+                    p["starters"],
+                    leg=p.get("leg"),
+                    round=p.get("round"),
+                )
             if cmd == "waiver-claim":
                 return auth.submit_waiver_claim(
                     p["league_id"], p["roster_id"],
