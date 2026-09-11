@@ -19,11 +19,46 @@ from sleeper.types.player import Player
 KTC_DYNASTY_RANKINGS_URL = "https://keeptradecut.com/dynasty-rankings"
 KTC_TRADE_DATABASE_URL = "https://keeptradecut.com/dynasty/trade-database"
 
+# KTC moved the full rankings payload out of a JS variable and into a JSON
+# script tag (observed 2026-09-08, which is when the daily snapshots started
+# landing empty). The page still contains the text `var playersArray =`, but
+# it now reads:
+#
+#     <script type="application/json" id="ktc-players">[{...}]</script>
+#     var playersArray = JSON.parse(document.getElementById('ktc-players').textContent);
+#
+# so a regex looking for an array *literal* matches nothing. The per-record
+# schema did not change, only where the records live.
+_PLAYERS_JSON_TAG_RE = re.compile(
+    r"<script[^>]*id=[\"']ktc-players[\"'][^>]*>(.*?)</script>", re.DOTALL
+)
+# Retained as a fallback in case KTC reverts, and because self-hosted mirrors
+# of the old page shape still exist.
 _PLAYERS_ARRAY_RE = re.compile(r"var\s+playersArray\s*=\s*(\[.*?\]);\s*\n", re.DOTALL)
+_TRADES_JSON_TAG_RE = re.compile(
+    r"<script[^>]*id=[\"']ktc-trades[\"'][^>]*>(.*?)</script>", re.DOTALL
+)
 _TRADES_VAR_RE = re.compile(r"var\s+trades\s*=\s*(\[.*?\]);\s*\n", re.DOTALL)
 
 _VALUE_FLOOR = 100  # floor for unranked assets to avoid div-by-zero
 _KTC_TIMEOUT = 30.0
+
+# A live scrape that yields fewer than this many players means the page shape
+# changed, not that KTC had a quiet day. The real board carries ~500 entries
+# (players plus RDP picks); the page also embeds small "featured" and
+# risers/fallers arrays of 3-5 records, so the floor sits above those to stop
+# a partial match from passing as success.
+_MIN_EXPECTED_PLAYERS = 100
+
+
+class KTCScrapeError(RuntimeError):
+    """KTC returned a page we could not extract values from.
+
+    Deliberately loud. The previous code returned an empty list when its
+    regex missed, so when KTC moved the payload into a JSON script tag the
+    scheduled snapshot job kept "succeeding" and committed three days of
+    `player_count: 0` files before anyone noticed.
+    """
 
 _TEAM_ALIASES: dict[str, str] = {
     "JAC": "JAX", "JAG": "JAX",
@@ -168,13 +203,34 @@ def _fetch_page(url: str, params: dict[str, str] | None = None) -> str:
 
 
 def _extract_js_var(html: str, pattern: re.Pattern[str]) -> list[dict]:
+    """Pull a JSON array out of an HTML page by regex.
+
+    Returns [] when the pattern does not match, so callers can try another
+    shape. A pattern that *does* match but yields unparseable JSON raises,
+    because that means KTC changed the payload format and silently returning
+    [] would look identical to "no players today".
+    """
     match = pattern.search(html)
     if not match:
         return []
+    payload = match.group(1).strip()
     try:
-        return json.loads(match.group(1))
-    except json.JSONDecodeError:
-        return []
+        data = json.loads(payload)
+    except json.JSONDecodeError as e:
+        raise KTCScrapeError(
+            f"matched KTC payload but could not parse it as JSON ({e}). "
+            "KTC likely changed its page format."
+        ) from e
+    return data if isinstance(data, list) else []
+
+
+def _extract_first(html: str, patterns: "list[re.Pattern[str]]") -> list[dict]:
+    """Try each pattern in order and return the first non-empty result."""
+    for pattern in patterns:
+        records = _extract_js_var(html, pattern)
+        if records:
+            return records
+    return []
 
 
 def _normalize_name(name: str) -> str:
@@ -379,13 +435,29 @@ def fetch_ktc_players(force_refresh: bool = False) -> list[KTCPlayer]:
             return [_dict_to_ktc_player(d) for d in cached]
 
     html = _fetch_page(KTC_DYNASTY_RANKINGS_URL)
-    raw = _extract_js_var(html, _PLAYERS_ARRAY_RE)
+    raw = _extract_first(html, [_PLAYERS_JSON_TAG_RE, _PLAYERS_ARRAY_RE])
+    if not raw:
+        raise KTCScrapeError(
+            f"found no player payload at {KTC_DYNASTY_RANKINGS_URL}. Expected a "
+            '<script type="application/json" id="ktc-players"> tag or a legacy '
+            "`var playersArray = [...]` literal; neither matched."
+        )
 
     players = []
     for entry in raw:
         p = _parse_ktc_player_entry(entry)
         if p is not None:
             players.append(p)
+
+    if len(players) < _MIN_EXPECTED_PLAYERS:
+        # Never cache or return a partial board. Callers treat a short list as
+        # "these are all the players", which quietly corrupts every downstream
+        # valuation instead of failing.
+        raise KTCScrapeError(
+            f"extracted only {len(players)} players from {len(raw)} records, "
+            f"expected at least {_MIN_EXPECTED_PLAYERS}. KTC's page shape or "
+            "record schema likely changed."
+        )
 
     cache.set("players", [_ktc_player_to_dict(p) for p in players])
     return players
@@ -404,7 +476,9 @@ def fetch_ktc_trades(force_refresh: bool = False) -> list[KTCTrade]:
             return [_dict_to_ktc_trade(d) for d in cached]
 
     html = _fetch_page(KTC_TRADE_DATABASE_URL)
-    raw = _extract_js_var(html, _TRADES_VAR_RE)
+    # The trade page still uses a `var trades = [...]` literal, but KTC is
+    # clearly migrating pages to JSON script tags, so try that shape too.
+    raw = _extract_first(html, [_TRADES_VAR_RE, _TRADES_JSON_TAG_RE])
 
     trades = []
     for entry in raw:

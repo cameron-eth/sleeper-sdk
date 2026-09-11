@@ -46,6 +46,11 @@ class PlayerTrend:
         return getattr(self.points[-1], attr) - getattr(self.points[0], attr)
 
 
+#: Below this, a snapshot file cannot hold a real board. An empty one
+#: (`player_count: 0`) is 118 bytes; a populated one is well over 100 KB.
+_MIN_SNAPSHOT_BYTES = 1024
+
+
 def _snapshot_files(snapshot_dir: Path) -> list[Path]:
     if not snapshot_dir.exists():
         return []
@@ -57,6 +62,21 @@ def _snapshot_files(snapshot_dir: Path) -> list[Path]:
         try:
             datetime.strptime(p.stem, "%Y-%m-%d")
         except ValueError:
+            continue
+        # Skip empty snapshots. data/ktc/ holds three real ones (2026-09-08
+        # through 09-10) from when the KTC scraper silently returned no players
+        # and the snapshot job committed the result anyway. They carry no rows,
+        # so including them is never useful, and letting one become a window
+        # boundary in get_movers() makes the whole window come back empty.
+        #
+        # Tested by size rather than by parsing: this function runs just to
+        # list dates, and there are ~170 snapshots at ~140 KB each, so reading
+        # them all would mean ~23 MB of I/O per call. An empty snapshot is 118
+        # bytes; a real one is six figures. Nothing legitimate lands near 1 KB.
+        try:
+            if p.stat().st_size < _MIN_SNAPSHOT_BYTES:
+                continue
+        except OSError:
             continue
         files.append(p)
     files.sort(key=lambda p: p.stem)

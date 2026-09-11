@@ -46,6 +46,13 @@ def main() -> int:
         action="store_true",
         help="Overwrite today's snapshot if it already exists",
     )
+    parser.add_argument(
+        "--min-players",
+        type=int,
+        default=100,
+        dest="min_players",
+        help="Refuse to write a snapshot with fewer players than this (default: 100)",
+    )
     args = parser.parse_args()
 
     out_dir = Path(args.out_dir)
@@ -67,6 +74,21 @@ def main() -> int:
     rows = [_player_to_row(p) for p in players]
     # Stable sort so the diff between days is minimal
     rows.sort(key=lambda r: (r.get("ktc_id") or ""))
+
+    # `fetch_ktc_players` already raises on a short board, so reaching this with
+    # too few rows should be impossible. Kept anyway because the failure it
+    # guards against actually shipped: when KTC moved its payload into a JSON
+    # script tag the scraper returned [] without error, and this script cheerfully
+    # overwrote latest.json with `player_count: 0` for three straight days.
+    # latest.json is what every analytics path reads, so clobbering it takes the
+    # whole toolchain down silently. Never write a degenerate snapshot.
+    if len(rows) < args.min_players:
+        print(
+            f"ERROR: only {len(rows)} players (expected >= {args.min_players}). "
+            "Refusing to write a snapshot. Existing latest.json is left intact.",
+            file=sys.stderr,
+        )
+        return 1
 
     snapshot = {
         "date": today,

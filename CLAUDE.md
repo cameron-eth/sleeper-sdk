@@ -71,6 +71,8 @@ Sleeper models pick ownership by *exception*: every team implicitly owns its own
 | **Missing ages** | KTC omits age for many rookies (arrives as `-1`). Backfill from Sleeper via `Asset.with_age()`, or young assets read as prime-aged. |
 | **Python 3.9 event loop** | Multiple `asyncio.run()` / `sync()` calls fail. Batch all async work into one block. |
 | **KTC SSL on macOS** | System Python 3.9 has outdated SSL; `_fetch_page()` falls back to `curl` automatically. |
+| **KTC page shape** | The rankings payload lives in `<script type="application/json" id="ktc-players">`, not a JS variable. The page still contains the text `var playersArray =`, but it reads `JSON.parse(document.getElementById('ktc-players').textContent)`. `_PLAYERS_ARRAY_RE` is kept only as a fallback. The page also embeds 3-5 record "featured" and risers/fallers arrays — don't mistake one for the board. |
+| **KTC scrape fails loud** | `fetch_ktc_players()` raises `KTCScrapeError` on no payload or a board under `_MIN_EXPECTED_PLAYERS` (100), and never caches a partial one. This is deliberate: the old code returned `[]` on a regex miss, so when KTC moved the payload the snapshot job kept exiting 0 and committed three days of `player_count: 0`, silently zeroing every KTC command. `snapshot_ktc.py --min-players` guards the write too, and `_snapshot_files()` skips empty snapshots by size so one can't become a `get_movers()` window boundary. |
 | **KTC value cap** | Values cap at 9,999, so the very top players trade above their listed number. |
 | **`TradedPick.owner_id`** | A **roster_id** (1–12), not a user_id. |
 | **KTC match rate** | ~92% of players map to Sleeper IDs; rookies and backups may be missing. |
