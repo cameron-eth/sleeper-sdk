@@ -7,10 +7,11 @@ from typing import Any
 from sleeper.api.drafts import DraftsApi
 from sleeper.api.leagues import LeaguesApi
 from sleeper.api.players import PlayersApi
+from sleeper.api.projections import ProjectionsApi
 from sleeper.api.state import StateApi
 from sleeper.api.users import UsersApi
 from sleeper.cache.player_cache import PlayerCache
-from sleeper.http.client import HttpClient
+from sleeper.http.client import PROJECTIONS_BASE_URL, HttpClient
 from sleeper.types.player import Player
 
 
@@ -34,6 +35,10 @@ class SleeperClient:
         timeout: float = 30.0,
     ):
         self._http = HttpClient(timeout=timeout)
+        # Projections sit on a second host, so they need their own transport
+        # (and get their own rate-limit budget, which is correct — the limit
+        # is per-host).
+        self._projections_http = HttpClient(base_url=PROJECTIONS_BASE_URL, timeout=timeout)
         self._player_cache = PlayerCache(
             cache_dir=cache_dir,
             ttl=cache_ttl,
@@ -45,6 +50,7 @@ class SleeperClient:
         self.drafts = DraftsApi(self._http)
         self.players = PlayersApi(self._http)
         self.state = StateApi(self._http)
+        self.projections = ProjectionsApi(self._projections_http)
 
     async def get_all_players(self, sport: str = "nfl", force_refresh: bool = False) -> dict[str, Player]:
         """Get all players with caching. Uses cached data if available and fresh."""
@@ -73,6 +79,7 @@ class SleeperClient:
 
     async def close(self) -> None:
         await self._http.close()
+        await self._projections_http.close()
 
     async def __aenter__(self) -> SleeperClient:
         return self

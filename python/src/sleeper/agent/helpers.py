@@ -21,10 +21,18 @@ Examples
 from __future__ import annotations
 
 import asyncio
+import re
 from datetime import datetime, timezone
-from typing import Any, Optional
+from typing import Any, Optional, Sequence
 
+from sleeper.analytics.start_sit import (
+    INJURY_OUT,
+    INJURY_WATCH,
+    build_candidate,
+    compare_projections,
+)
 from sleeper.client import SleeperClient
+from sleeper.types.projection import PlayerProjection, ProjectionPlayer
 
 
 # ---------------------------------------------------------------------------
@@ -360,8 +368,10 @@ def optimal_lineup(
 # check_lineup_health — injury / bye / empty-slot scan
 # ---------------------------------------------------------------------------
 
-INJURY_DEMOTE = {"Out", "IR", "PUP", "Suspended", "Doubtful"}
-INJURY_WATCH  = {"Questionable", "Probable", "DTD"}
+# Single source of truth is analytics.start_sit, so the lineup scan and the
+# start/sit verdict can never disagree about who counts as out. Kept under the
+# old name because callers import it from here.
+INJURY_DEMOTE = INJURY_OUT
 
 
 def check_lineup_health(
@@ -503,3 +513,261 @@ def rank_waiver_targets(
     for r in rows:
         r.pop("_pri", None)
     return rows[:top]
+
+
+# ---------------------------------------------------------------------------
+# Projections — the missing input for optimal_lineup and start/sit
+# ---------------------------------------------------------------------------
+
+def _norm_name(name: str) -> str:
+    """Fold a player name for matching: lowercase, alphanumerics only.
+
+    Handles the punctuation mismatches that bite in practice —
+    `"Ja'Marr Chase"` / `"Ja Marr Chase"`, `"D.K. Metcalf"` / `"DK Metcalf"`,
+    `"Kenneth Walker III"` keeping its suffix.
+    """
+    return re.sub(r"[^a-z0-9]", "", (name or "").lower())
+
+
+def projection_points(
+    projections: Sequence[PlayerProjection],
+    scoring_settings: Optional[dict] = None,
+    *,
+    scoring: str = "ppr",
+) -> dict[str, float]:
+    """Build the `{player_id: points}` map that `optimal_lineup` expects.
+
+    Routed through `analytics.start_sit.build_candidate` rather than scoring
+    the stat line directly, so the availability rules apply here too: a player
+    on bye or ruled Out is omitted instead of carrying the stale projection
+    Sleeper still serves for him. Without that, wiring real projections into
+    the optimizer would start slotting ruled-out players.
+    """
+    out: dict[str, float] = {}
+    for proj in projections:
+        cand = build_candidate(proj, scoring_settings, scoring=scoring)
+        if not cand.available:
+            continue
+        out[cand.player_id] = cand.projected_points
+    return out
+
+
+async def afetch_projections(
+    client: SleeperClient,
+    season: Optional[str] = None,
+    week: Optional[int] = None,
+    *,
+    positions: Optional[Sequence[str]] = None,
+) -> tuple[list[PlayerProjection], int, str]:
+    """Fetch week projections, resolving season/week from league state.
+
+    Takes an existing client rather than opening one, so a composite can do
+    all of its async work inside a single event loop — Python 3.9 cannot
+    survive two `asyncio.run()` calls in a process.
+
+    Returns:
+        `(projections, week, season)` — the resolved week and season come back
+        so callers can report which week they actually answered for.
+    """
+    if season is None or week is None:
+        state = await client.state.get_state()
+        if season is None:
+            season = str(getattr(state, "season", None) or _current_season())
+        if week is None:
+            week = int(getattr(state, "week", 1) or 1)
+
+    kwargs: dict[str, Any] = {}
+    if positions:
+        kwargs["position"] = list(positions)
+    projections = await client.projections.get_week(season, week, **kwargs)
+    return projections, week, season
+
+
+# ---------------------------------------------------------------------------
+# start_sit — the one-call answer to "start X or Y?"
+# ---------------------------------------------------------------------------
+
+async def astart_sit(
+    username: str,
+    players: Sequence[str],
+    league_filter: Optional[str] = None,
+    *,
+    week: Optional[int] = None,
+    slots: int = 1,
+) -> dict:
+    """Answer a start/sit question for one league, by player name.
+
+    Resolves names against the asker's own roster first, then the rest of the
+    league, then all of the NFL — so `"start Hurts or Allen"` works whether
+    the second name is a bench guy, a leaguemate's player being scouted, or a
+    free agent.
+
+    Uses the league's own `scoring_settings`, which is the whole point of
+    going through the league rather than reading `pts_ppr` off the feed.
+
+    Returns:
+        The `StartSitVerdict.to_dict()` payload plus `league`, `resolved` and
+        `unresolved` keys.
+    """
+    if not players:
+        raise ValueError("Pass at least one player name to compare")
+
+    async with SleeperClient() as client:
+        user, league, _all = await _resolve_user_and_league(client, username, league_filter)
+        rosters = await client.leagues.get_rosters(league.league_id)
+        sleeper_players = await client.get_all_players()
+        projections, week, season = await afetch_projections(client, league.season, week)
+
+    my_roster = next((r for r in rosters if r.owner_id == user.user_id), None)
+    my_ids = set(my_roster.players or []) if my_roster else set()
+    league_ids = {pid for r in rosters for pid in (r.players or [])}
+
+    # Name -> id, preferring players closest to the asker. Later tiers only
+    # fill names the earlier tiers missed.
+    def index(ids) -> dict[str, str]:
+        out: dict[str, str] = {}
+        for pid in ids:
+            p = sleeper_players.get(pid)
+            if not p:
+                continue
+            full = getattr(p, "full_name", None) or " ".join(
+                x for x in (p.first_name, p.last_name) if x
+            )
+            if full:
+                out.setdefault(_norm_name(full), pid)
+        return out
+
+    tiers = [index(my_ids), index(league_ids - my_ids), index(sleeper_players.keys())]
+
+    by_id = {p.player_id: p for p in projections}
+    resolved: list[dict] = []
+    unresolved: list[str] = []
+    picked: list[PlayerProjection] = []
+
+    for raw in players:
+        key = _norm_name(raw)
+        pid = next((t[key] for t in tiers if key in t), None)
+        if pid is None:
+            unresolved.append(raw)
+            continue
+        source = "my_roster" if pid in my_ids else (
+            "league" if pid in league_ids else "free_agent"
+        )
+        resolved.append({"query": raw, "player_id": pid, "source": source})
+
+        proj = by_id.get(pid)
+        if proj is None:
+            # Not in the position sweep (IDP, or a position we did not fetch).
+            # Synthesize a row so the player still appears in the verdict
+            # rather than silently vanishing from his own start/sit question.
+            p = sleeper_players.get(pid)
+            proj = PlayerProjection(
+                player_id=pid,
+                week=week,
+                season=season,
+                team=getattr(p, "team", None),
+                player=ProjectionPlayer(
+                    first_name=getattr(p, "first_name", None),
+                    last_name=getattr(p, "last_name", None),
+                    position=getattr(p, "position", None),
+                    injury_status=getattr(p, "injury_status", None),
+                ),
+            )
+        picked.append(proj)
+
+    verdict = compare_projections(
+        picked,
+        league.scoring_settings,
+        slots=slots,
+        week=week,
+    )
+    payload = verdict.to_dict()
+    if unresolved:
+        payload["warnings"] = list(payload.get("warnings") or []) + [
+            f"Could not find: {', '.join(unresolved)}"
+        ]
+    payload["league"] = {"league_id": league.league_id, "name": league.name}
+    payload["resolved"] = resolved
+    payload["unresolved"] = unresolved
+    return payload
+
+
+def start_sit(
+    username: str,
+    players: Sequence[str],
+    league_filter: Optional[str] = None,
+    **kw,
+) -> dict:
+    return asyncio.run(astart_sit(username, players, league_filter, **kw))
+
+
+# ---------------------------------------------------------------------------
+# lineup_with_projections — optimal_lineup, sourced automatically
+# ---------------------------------------------------------------------------
+
+async def alineup_with_projections(
+    username: str,
+    league_filter: Optional[str] = None,
+    *,
+    week: Optional[int] = None,
+) -> dict:
+    """`optimal_lineup` with projections fetched and league-scored for you.
+
+    Previously callers had to supply a `{player_id: points}` file by hand, and
+    `optimal_lineup` defaulted every projection to 0.0 — which made its
+    "optimal" lineup arbitrary.
+    """
+    async with SleeperClient() as client:
+        user, league, _all = await _resolve_user_and_league(client, username, league_filter)
+        rosters = await client.leagues.get_rosters(league.league_id)
+        users = await client.leagues.get_users(league.league_id)
+        sleeper_players = await client.get_all_players()
+        projections, week, _season = await afetch_projections(client, league.season, week)
+
+    my_roster = next((r for r in rosters if r.owner_id == user.user_id), None)
+    if my_roster is None:
+        raise ValueError(f"{username} has no roster in {league.name}")
+
+    u_by_id = {u.user_id: u for u in users}
+    owner = u_by_id.get(my_roster.owner_id or "")
+
+    def expand(pid: str) -> dict:
+        p = sleeper_players.get(pid)
+        if not p:
+            return {"player_id": pid}
+        return {
+            "player_id": pid,
+            "name": getattr(p, "full_name", None) or f"{p.first_name} {p.last_name}",
+            "position": p.position,
+            "team": p.team,
+            "injury_status": getattr(p, "injury_status", None),
+            "status": getattr(p, "status", None),
+        }
+
+    all_players = [expand(p) for p in (my_roster.players or []) if p and p != "0"]
+    roster_view = {
+        "roster_id": my_roster.roster_id,
+        "owner_display_name": getattr(owner, "display_name", None) if owner else None,
+        "starters": [expand(p) for p in (my_roster.starters or []) if p and p != "0"],
+        "players": all_players,
+    }
+
+    points = projection_points(projections, league.scoring_settings)
+    opt = optimal_lineup(roster_view, league.roster_positions or [], projections=points)
+    opt["week"] = week
+    opt["scoring"] = "league scoring_settings" if league.scoring_settings else "ppr"
+    # Anyone with no usable projection: on bye, ruled out, or simply not in the
+    # position sweep. Surfaced so the caller can see what the optimizer
+    # treated as a zero rather than having to infer it.
+    opt["projections_missing"] = [
+        p["player_id"] for p in all_players if p["player_id"] not in points
+    ]
+    return {
+        "league": {"league_id": league.league_id, "name": league.name},
+        "week": week,
+        "lineup": opt,
+    }
+
+
+def lineup_with_projections(username: str, league_filter: Optional[str] = None, **kw) -> dict:
+    return asyncio.run(alineup_with_projections(username, league_filter, **kw))

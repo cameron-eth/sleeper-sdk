@@ -28,6 +28,8 @@ EXPECTED_SUBCOMMANDS = [
     "gm-mode",
     "proposed-trades",   # added May 2026
     "trade-partners",    # added May 2026
+    "projections",       # added Sep 2026
+    "start-sit",         # added Sep 2026
 ]
 
 
@@ -83,3 +85,40 @@ def test_find_trades_has_mode_options():
     assert result.returncode == 0
     for mode in ("normal", "upgrade", "downtiering"):
         assert mode in result.stdout
+
+
+def test_start_sit_has_player_and_slot_flags():
+    result = _run_cli("start-sit", "--help")
+    assert result.returncode == 0
+    for flag in ("--players", "--slots", "--week", "--json"):
+        assert flag in result.stdout
+
+
+def test_start_sit_requires_players():
+    """Without --players there is nothing to compare; argparse must reject it."""
+    result = _run_cli("start-sit", "someuser")
+    assert result.returncode != 0
+    assert "--players" in (result.stdout + result.stderr)
+
+
+def test_projections_username_is_optional():
+    """`projections` works with no league — the username only adds scoring."""
+    result = _run_cli("projections", "--help")
+    assert result.returncode == 0
+    assert "[username]" in result.stdout
+    for flag in ("--position", "--week", "--season", "--top"):
+        assert flag in result.stdout
+
+
+def test_start_sit_rejects_fewer_players_than_slots():
+    """One player for one slot is not a decision — fail before any network I/O."""
+    result = _run_cli("start-sit", "someuser", "--players", "Solo Guy")
+    assert result.returncode != 0
+    assert "not a decision" in (result.stdout + result.stderr)
+
+
+def test_agent_lineup_no_longer_requires_a_projections_file():
+    """The --projections file is now an override, not a prerequisite."""
+    result = _run_cli("lineup", "--help")
+    assert result.returncode == 0
+    assert "Omit to use Sleeper's projections" in result.stdout

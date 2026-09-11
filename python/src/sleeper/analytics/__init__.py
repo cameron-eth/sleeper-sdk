@@ -68,3 +68,11 @@ from sleeper.analytics.value_adjustment import (
     apply_adjustment_to_delta,
     ValueAdjustment,
 )
+from sleeper.analytics.start_sit import (
+    compare_projections,
+    build_candidate,
+    confidence_label,
+    confidence_score,
+    StartSitCandidate,
+    StartSitVerdict,
+)

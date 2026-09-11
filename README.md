@@ -97,6 +97,13 @@ league = client.sync(client.leagues.get_league("1328460395249172480"))
 | `client.drafts` | `get_draft`, `get_drafts_for_user`, `get_drafts_for_league`, `get_picks`, `get_traded_picks` |
 | `client.players` | `get_all_players` (cached), `get_trending` |
 | `client.state` | `get_state` |
+| `client.projections` | `get_week`, `get_season`, `get_player_weeks`, `get_week_stats` |
+
+**Projections** come from `api.sleeper.com` — a different host from the rest of the read API, with no version prefix and no published contract, but it is what the Sleeper app itself renders. Three quirks the SDK handles for you:
+
+- `position` takes **one** value; repeating the param keeps only the last and `position=QB,RB` returns `[]`. Passing a list fans out one request per position and merges, deduped by `player_id`.
+- Omitting `position` returns the whole NFL — ~9.4k rows including long snappers. `get_week` defaults to the skill positions instead.
+- A bye week arrives as a row with `game_id: None` and **no `pts_ppr` key at all**, so `stats.get("pts_ppr", 0.0)` gets the right number by accident while losing the reason. Use `proj.is_bye` / `proj.has_projection`.
 
 **Built-ins:** token-bucket rate limiting (under Sleeper's 1000 req/min cap), exponential-backoff retries on 5xx, 24h player cache to memory + disk, Pydantic types on every response.
 
@@ -197,6 +204,45 @@ Archetype is computed from:
 
 The PRETENDER detector is the most distinctive check: mid-value teams (rank 3-6) that are *underperforming their value* (production rank 6-9) AND skewing old → usually the classic dynasty dead-zone trap.
 
+### Start/Sit — this week's lineup decision
+
+KTC answers "who is worth more." This answers "who do I start on Sunday."
+
+```python
+from sleeper import SleeperClient
+from sleeper.analytics.start_sit import compare_projections
+
+client = SleeperClient()
+
+async def ask():
+    async with SleeperClient() as c:
+        league = await c.leagues.get_league("1328460395249172480")
+        projections = await c.projections.get_week(league.season, 1, position=["QB"])
+        mine = [p for p in projections if p.player_id in ("5870", "4017")]
+        return compare_projections(mine, league.scoring_settings)
+
+verdict = client.sync(ask())
+print(verdict.recommendation)
+# Start Daniel Jones over Deshaun Watson (lean, +2.2).
+```
+
+Three things it gets right that reading `pts_ppr` off the feed does not:
+
+**1. Your league's scoring, not generic PPR.** The projection `stats` keys and a league's `scoring_settings` keys are the same vocabulary (`pass_yd`, `rec`, `bonus_rec_te`, `pts_allow_21_27`), so league points are a dot product over the keys they share. A 6-point passing TD or TE premium moves a QB or TE several points — often more than the margin the decision turns on.
+
+**2. Availability outranks the projection.** Sleeper still serves a projection for a player who was ruled out on Friday, and ranking on points alone will happily start him. Candidates sort on `(availability_rank, -points)`, so a bye or `Out` player can never be slotted ahead of someone who can play — and the verdict says *why* rather than reporting a bare `0.0`.
+
+**3. A coin-flip is called a coin-flip.** Weekly projections carry several points of error, so confidence is a continuous function of the margin — `margin / (margin + 3.0)` — banded into `coin-flip` / `lean` / `clear`. No decision hinges on landing either side of a threshold.
+
+| Function | What it does |
+|----------|-------------|
+| `analytics.start_sit.compare_projections` | Rank candidates, fill N slots, return a verdict with reasons |
+| `analytics.start_sit.confidence_score` | Continuous 0–1 confidence from a point margin |
+| `enrichment.projections.score_projection` | League points for one projection, with the per-stat breakdown |
+| `enrichment.projections.rank_projections` | Sort a position sweep by league points, filtering filler rows |
+| `agent.helpers.start_sit` | One call, by player name — resolves roster → league → all NFL |
+| `agent.helpers.lineup_with_projections` | `optimal_lineup` with projections fetched and league-scored |
+
 ### Single-league analytics
 
 | Module | What it does |
@@ -263,6 +309,8 @@ send-trade       →  Preview + fire the proposal via Sleeper GraphQL
 | `buy-sell buy\|sell` | Players trading below / above their KTC value |
 | `ktc-trend <player>` | Historical KTC from daily snapshots |
 | `pe-ratio` | Price-to-Earnings scan — find undervalued players |
+| `start-sit <user>` | "Start X or Y?" — league-scored projections, bye/injury aware, with confidence |
+| `projections` | Weekly projection board, optionally scored by your league's settings |
 | Agent commands | `whoami`, `inbox`, `outbox`, `lineup`, `lineup-health`, `roster`, `matchup`, `waivers`, `trade-respond`, `lineup-set`, `waiver-claim`, `drop`, `add`, `taxi-move`, `ir-move`, `activate`, `execute`, `preview-show` (auth required) |
 
 ### `gm-mode` — archetype + strategy
@@ -360,6 +408,7 @@ Skills in `.claude/commands/` let an agent invoke the right CLI recipe for the r
 | `league-values` | "How much is my roster worth?" |
 | `trade-check` | "Is this trade fair?" |
 | `trade-guru` | Multi-turn trade negotiation reasoning |
+| `start-sit` | "Should I start X or Y this week?" |
 
 ---
 
@@ -369,7 +418,7 @@ Skills in `.claude/commands/` let an agent invoke the right CLI recipe for the r
 sleeper-sdk/
 ├── .claude/
 │   ├── STRUCTURE.md            # Skill ↔ CLI ↔ analytics map + hygiene rules
-│   └── commands/               # Claude skill files (16 skills, all *.md)
+│   └── commands/               # Claude skill files (all *.md)
 ├── .github/workflows/
 │   ├── ktc-snapshot.yml        # Daily KTC value snapshots
 │   └── tests.yml               # pytest matrix on every PR to main

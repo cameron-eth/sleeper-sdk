@@ -10,6 +10,10 @@ from sleeper.errors import SleeperApiError, SleeperNotFoundError, SleeperRateLim
 
 BASE_URL = "https://api.sleeper.app/v1"
 
+# Projections and weekly stats live on a different host with no version
+# prefix. Undocumented, but it is what the Sleeper app itself reads.
+PROJECTIONS_BASE_URL = "https://api.sleeper.com"
+
 MAX_RETRIES = 3
 RETRY_BACKOFF = [1.0, 2.0, 4.0]
 RATE_LIMIT_TOKENS = 1000
