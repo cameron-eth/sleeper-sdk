@@ -126,6 +126,35 @@ await client.players.get_trending(
 await client.state.get_state(sport="nfl") -> SportState
 ```
 
+### ProjectionsApi — `client.projections`
+
+```python
+await client.projections.get_week(
+    season,                              # int | str, e.g. 2026
+    week,                                # int
+    position=("QB","RB","WR","TE","K","DEF"),   # str | Sequence[str] | None
+    season_type="regular",
+    order_by="pts_ppr",
+) -> list[PlayerProjection]
+
+await client.projections.get_season(season, position=..., ...) -> list[PlayerProjection]
+await client.projections.get_week_stats(season, week, ...) -> list[PlayerProjection]  # realized
+await client.projections.get_player_weeks(player_id, season) -> dict[int, PlayerProjection]
+```
+
+Served from **`api.sleeper.com`** (no `/v1`), not `api.sleeper.app` — a separate
+`HttpClient` with its own rate-limit budget. Undocumented upstream; the models
+are permissive by design.
+
+| Quirk | Consequence |
+|---|---|
+| `position` takes one value | Repeating the param keeps only the last; `position=QB,RB` returns `[]`. Pass a list and `get_week` fans out per position and merges, deduped on `player_id`. |
+| `position=None` means all | ~9.4k rows / 5.7 MB including linemen and long snappers. The default is the skill positions. |
+| Bye rows are present, not omitted | `team` set, `game_id: None`, and **no `pts_ppr` key** — check `is_bye`, not a points value of 0. |
+| Most rows are filler | Only ~12% of a sweep carries a real forecast. Filter on `has_projection`. |
+| `get_player_weeks` differs | No embedded `player` object (`name`/`position` are None) and the bye week is **absent** rather than flagged. |
+| `order_by` is per-request | With a fan-out each batch sorts independently; re-sort with `rank_projections`. |
+
 ---
 
 ## 3. Type Models
@@ -716,7 +745,60 @@ from sleeper.analytics.user_collector import (
     collect_user_league_snapshots, extract_trades_only,
     LeagueSnapshot,
 )
+from sleeper.analytics.start_sit import (
+    compare_projections, build_candidate,
+    confidence_score, confidence_label,
+    StartSitCandidate, StartSitVerdict,
+    INJURY_OUT, INJURY_WATCH, PROJECTION_NOISE_POINTS,
+)
 ```
+
+### Start/Sit
+
+```python
+compare_projections(
+    projections,              # Sequence[PlayerProjection]
+    scoring_settings=None,    # league.scoring_settings — strongly recommended
+    slots=1,                  # how many of them can start
+    scoring="ppr",            # fallback when scoring_settings is None
+    week=None,                # inferred from the projections if omitted
+) -> StartSitVerdict          # raises ValueError if slots < 1
+```
+
+`StartSitVerdict`: `start[]`, `sit[]`, `ranked`, `margin`, `confidence`
+(`coin-flip` / `lean` / `clear`), `confidence_score`, `recommendation`,
+`reasons[]`, `warnings[]`, `to_dict()`.
+
+`StartSitCandidate`: `projected_points`, `status`
+(`ok` / `no_projection` / `bye` / `no_team` / `out`), `available`,
+`availability_rank`, `drivers[]`, `label`.
+
+Three invariants:
+
+- **Availability outranks points.** Sorting is `(availability_rank, -points)`, so
+  a bye or `Out` player is never slotted over someone who can play — and his
+  stale projection is zeroed with the reason recorded, not silently reported as
+  a forecast of 0.0.
+- **`margin` is last-starter vs best-bench**, not first vs last. With 2 slots and
+  3 players the decision being made is #2 vs #3; first-vs-last would overstate it.
+- **Confidence is continuous:** `margin / (margin + PROJECTION_NOISE_POINTS)`,
+  monotonic and bounded in [0, 1), so no decision lands on a threshold. Retune
+  the one constant rather than the bands.
+
+```python
+from sleeper.enrichment.projections import (
+    score_projection,          # -> ScoredProjection(points, components, unmatched_scoring_keys)
+    score_stats,               # raw dot product
+    build_projection_lookup,   # {player_id: points}, omits players with no game
+    rank_projections,          # sort a sweep by league points, drop filler rows
+    is_scoring_key, NON_SCORING_STAT_KEYS,
+)
+```
+
+League points are `sum(stats[k] * scoring_settings[k])` over the shared keys —
+the two dicts use the same vocabulary. Non-scoring keys (`gp`, `cmp_pct`,
+`adp_*`, and Sleeper's own `pts_*`) fall out of the intersection on their own;
+**never put `pts_ppr` in a scoring dict**, it double-counts the stat line.
 
 ### Standings
 
@@ -1059,6 +1141,48 @@ All future picks (current year + 2 out, rounds 1–4) with KTC values. Tracks tr
 | Original Owner | Who it originally belonged to (blank if untouched) |
 | Traded | Y/N |
 
+### `start-sit`
+```
+sleeper start-sit <username> --players "<p1>" "<p2>" [...] [--league <name>]
+                  [--week N] [--slots N] [--verbose] [--json]
+```
+"Start X or Y?" — ranks candidates on the league's own scoring, handles byes and
+injury designations, and reports a confidence band. `--slots 2` answers "which
+two of these three." `--verbose` shows the stat lines behind each projection;
+`--json` emits the standard agent envelope.
+
+| Column | Description |
+|---|---|
+| (first) | `START` or `sit` |
+| Opp | Opponent, or `BYE` when the team is idle |
+| Proj | **League-scored** points — not Sleeper's `pts_ppr`. `-` means no projection published (unknown, not zero); `0.0` beside an `Out` tag means the projection was discarded |
+| Inj | Sleeper injury designation |
+
+Names are matched ignoring case and punctuation (`"DeZhaun Stribling"` finds
+`"De'Zhaun Stribling"`), resolved against the asker's roster first, then the
+league, then all of the NFL. Pass more players than `--slots`.
+
+### `projections`
+```
+sleeper projections [username] [--league <name>] [--week N] [--season YYYY]
+                    [--position QB RB ...] [--scoring ppr|half_ppr|std]
+                    [--min-points N] [--top N]
+```
+The weekly projection board. The username is optional — supply it (plus
+`--league`) to score with that league's `scoring_settings` instead of generic
+PPR. Defaults to the current season/week from Sleeper state and the skill
+positions. Rows with no published projection are filtered out.
+
+### `lineup`
+```
+sleeper lineup <username> [--league <name>] [--week N] [--projections <file>] [--json]
+```
+Current vs optimal starters, using Sleeper's projections scored by league
+settings. `--projections` overrides with a local
+`{player_id: projected_points}` JSON file for backtesting or a third-party
+projection set. Reports `delta_vs_current` and `projections_missing` (players
+on bye, ruled out, or absent from the position sweep).
+
 ---
 
 ## 9. Claude Skills
@@ -1074,6 +1198,7 @@ Located in `.claude/commands/`. Invoke with `/skill-name` in Claude Code.
 | `/trending` | Tool docs | How to find trending players |
 | `/buy-sell` | Tool docs | How to find buy/sell candidates |
 | `/picks` | Tool docs | How to view pick assets |
+| `/start-sit` | Tool docs | "Start X or Y this week?" — league-scored projections |
 | `/trade-guru` | **Agentic** | Trade analyst — builds full trade proposals for camfleety |
 | `/team-report` | **Agentic** | Compiles full dynasty team report (roster, picks, signals, summary) |
 | `/data-scientist` | **Agentic** | Answers open-ended dynasty data questions using SDK directly |

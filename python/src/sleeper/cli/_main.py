@@ -6,6 +6,7 @@ parsed args to the right handler. Command implementations live in:
     - trades.py    (trade-check, suggest-trades, find-trades)
     - send_trade.py (the only write op — needs SLEEPER_TOKEN)
     - analysis.py  (picks, gm-mode, proposed-trades)
+    - projections.py (projections, start-sit)
 
 Agent-only commands (whoami/inbox/lineup/...) are loaded lazily from
 sleeper.cli_agent if that module is available — it's not required.
@@ -21,6 +22,7 @@ from sleeper.cli.analysis import (
     cmd_proposed_trades,
     cmd_trade_partners,
 )
+from sleeper.cli.projections import cmd_projections, cmd_start_sit
 from sleeper.cli.send_trade import cmd_send_trade
 from sleeper.cli.trades import (
     cmd_find_trades,
@@ -212,6 +214,44 @@ def main() -> None:
     ft.add_argument("--single-only", action="store_true", dest="single_only",
                     help="Only show single-player trades (don't combine chips)")
 
+    # projections
+    pj = subparsers.add_parser("projections",
+                               help="Sleeper weekly projections, ranked "
+                                    "(optionally scored with your league's settings)")
+    pj.add_argument("username", nargs="?", default=None,
+                    help="Sleeper username — supply it to score with your league's "
+                         "scoring_settings instead of generic PPR")
+    pj.add_argument("--league", help="League name filter")
+    pj.add_argument("--week", type=int, default=None,
+                    help="NFL week (default: current week from Sleeper state)")
+    pj.add_argument("--season", default=None,
+                    help="Season year (default: current season from Sleeper state)")
+    pj.add_argument("--position", nargs="+", default=None,
+                    help="Positions to fetch (default: QB RB WR TE K DEF)")
+    pj.add_argument("--scoring", choices=["ppr", "half_ppr", "std"], default="ppr",
+                    help="Fallback scoring when no league is given (default: ppr)")
+    pj.add_argument("--min-points", type=float, default=None, dest="min_points",
+                    help="Hide players projected below this")
+    pj.add_argument("--top", type=int, default=40, help="Rows to show (default: 40)")
+
+    # start-sit
+    ss = subparsers.add_parser("start-sit",
+                               help="Start X or Y? Ranked by your league's scoring, "
+                                    "with bye/injury handling and a confidence band")
+    ss.add_argument("username", help="Sleeper username")
+    ss.add_argument("--players", nargs="+", required=True, metavar="PLAYER",
+                    dest="players",
+                    help="Players to weigh against each other (quoted names)")
+    ss.add_argument("--league", help="League name filter")
+    ss.add_argument("--week", type=int, default=None,
+                    help="NFL week (default: current week from Sleeper state)")
+    ss.add_argument("--slots", type=int, default=1,
+                    help="How many of them can start (default: 1)")
+    ss.add_argument("--verbose", action="store_true",
+                    help="Also show the stat lines driving each projection")
+    ss.add_argument("--json", action="store_true",
+                    help="Emit the standard agent JSON envelope instead of a table")
+
     # send-trade
     sd = subparsers.add_parser("send-trade",
                                help="Fire a propose_trade mutation against Sleeper (auth required)")
@@ -262,6 +302,10 @@ def main() -> None:
         cmd_pe_ratio(args)
     elif args.command == "ktc-trend":
         cmd_ktc_trend(args)
+    elif args.command == "projections":
+        cmd_projections(args)
+    elif args.command == "start-sit":
+        cmd_start_sit(args)
     elif args.command == "suggest-trades":
         cmd_suggest_trades(args)
     elif args.command == "find-trades":

@@ -25,7 +25,15 @@ Run the CLI from source without reinstalling: `PYTHONPATH=src python -m sleeper.
 
 Four stacked layers, each usable alone (see `README.md` for the diagram): Sleeper API → enrichment (KTC values, NFL stats) → analytics → decision layer (CLI + skills).
 
-`SleeperClient` is async-first and namespaced: `client.users`, `.leagues`, `.drafts`, `.players`, `.state`. Only `get_all_players()` hangs off the client directly. `client.sync()` exists for one-shot sync use.
+`SleeperClient` is async-first and namespaced: `client.users`, `.leagues`, `.drafts`, `.players`, `.state`, `.projections`. Only `get_all_players()` hangs off the client directly. `client.sync()` exists for one-shot sync use.
+
+`.projections` is the one namespace on a **second host** (`api.sleeper.com`, no `/v1`), so the client owns two `HttpClient`s and `close()` must close both. Adding another endpoint family on that host goes through `_projections_http`, not `_http`.
+
+### Projections and start/sit
+
+`api/projections.py` (fetch) → `enrichment/projections.py` (league scoring) → `analytics/start_sit.py` (decision) → `agent/helpers.py` + `cli/projections.py`. The analytics layer is pure; all I/O is in the agent/CLI layer, so start/sit tests run offline against `tests/fixtures/projections_week.json` — six real captured records covering playing / bye / no-team.
+
+League points are a dot product of the projection's `stats` and the league's `scoring_settings`, which share a key vocabulary (`pass_yd`, `rec`, `bonus_rec_te`, `pts_allow_21_27`). Taking the intersection means non-scoring keys (`gp`, `cmp_pct`, `adp_*`, and Sleeper's own `pts_*`) drop out on their own — **never add `pts_ppr` to a scoring dict**, it double-counts the whole stat line.
 
 ### Two trade systems coexist
 
@@ -42,6 +50,9 @@ Design notes for the L0–L3 stack live in the module docstrings, which record *
 - **Contextual value is a preference, not a currency.** It cannot be spent. Window re-weighting (`ALPHA` in `contextual_value.py`) must stay small enough to break ties among market-fair trades, never to justify market-losing ones. The market-realism gate in `trade_runtime.py` is the primary guardrail, not a formality.
 - **Two mirrored sign conventions for the consolidation premium.** `find_trades_engine.package_overpay` works in *overpay space* (positive = you overpay, so the premium is subtracted); `value_adjustment.apply_adjustment_to_delta` works in *net-value space* (positive = you gain, so acquiring the stud adds and shipping it subtracts). Conflating them has produced real bugs in both directions. The Hopkins case in `tests/test_value_adjustment.py` is the regression guard.
 - **Sub-2nd-round players are not full trade currency.** ~76% of KTC's pool sits below a mid-2nd; `tradeable_value()` discounts them. Picks are exempt.
+- **Availability outranks the projection in start/sit.** Sleeper still serves a projection for a player ruled out on Friday. `compare_projections` sorts on `(availability_rank, -points)` so points can never promote someone who cannot play; `projection_points()` omits them for the same reason. Bypassing `build_candidate` to score the stat line directly reintroduces the bug.
+- **A bye is an absent `pts_ppr`, not a zero.** `stats.get("pts_ppr", 0.0)` yields the right ordering by accident while reporting a bye as a genuine projection of 0.0. Use `is_bye` / `has_projection`.
+- **The two projection endpoints disagree about byes and about the player blob.** The position sweep includes a bye row with `game_id: None` and an embedded `player`; `get_player_weeks` omits the bye week entirely and has **no** `player` object, so `name`/`position` read as None there. Code written against one silently misreads the other.
 
 Tests for these modules assert *properties* (monotonic, bounded, no cliffs, correct sign) rather than pinning magic numbers, so recalibration should not require rewriting them. Keep that style.
 
@@ -63,7 +74,10 @@ Sleeper models pick ownership by *exception*: every team implicitly owns its own
 | **KTC value cap** | Values cap at 9,999, so the very top players trade above their listed number. |
 | **`TradedPick.owner_id`** | A **roster_id** (1–12), not a user_id. |
 | **KTC match rate** | ~92% of players map to Sleeper IDs; rookies and backups may be missing. |
-| **Cache** | `$TMPDIR/sleeper_sdk_cache/` — delete to force a refresh. |
+| **Cache** | `$TMPDIR/sleeper_sdk_cache/` — delete to force a refresh. Projections are **not** cached; they move during the week. |
+| **`position` is singular** | The projections endpoint keeps only the *last* `position` param and returns `[]` for `position=QB,RB`. Pass a list to `get_week` and it fans out per position and merges. Omitting it returns the whole NFL (~9.4k rows, 5.7 MB). |
+| **Most projection rows are filler** | A position sweep returns every rostered *and* unrostered player; only ~12% carry a real forecast (159 of 1364 week-1 WRs). Filter on `has_projection`. |
+| **Unpriceable scoring rules** | Leagues score plain `fgmiss`, but Sleeper only projects `fgmiss_30_39` / `fgmiss_40_49`, so that rule cannot be priced and K/DEF totals drift slightly from the app's. `ScoredProjection.unmatched_scoring_keys` reports it. Skill positions are unaffected. |
 
 ## Secrets
 
@@ -71,7 +85,7 @@ Sleeper models pick ownership by *exception*: every team implicitly owns its own
 
 ## Skills
 
-`.claude/commands/*.md` define ~17 slash-command skills wrapping the CLI (`gm-mode`, `find-trades`, `trade-guru`, `team-report`, …). A few hardcode a specific user and league rather than taking parameters.
+`.claude/commands/*.md` define ~18 slash-command skills wrapping the CLI (`gm-mode`, `find-trades`, `trade-guru`, `team-report`, `start-sit`, …). A few hardcode a specific user and league rather than taking parameters.
 
 ## Git
 

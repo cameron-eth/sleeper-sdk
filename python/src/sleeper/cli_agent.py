@@ -17,7 +17,8 @@ Commands added:
 
   roster           — my roster (starters/bench/taxi/IR) w/ ktc
   matchup          — this week's matchup
-  lineup           — current vs optimal starters w/ projections
+  lineup           — current vs optimal starters, using Sleeper projections
+                     scored by the league's own settings
   lineup-set       — set starters (preview/execute)
   lineup-health    — injury/bye/empty-slot scan for the active week
 
@@ -57,6 +58,7 @@ from sleeper.agent.helpers import (
     summarize_inbox,
     optimal_lineup,
     check_lineup_health,
+    lineup_with_projections,
     rank_drop_candidates,
     rank_waiver_targets,
 )
@@ -320,19 +322,24 @@ def cmd_waivers(args) -> None:
 
 def cmd_lineup(args) -> None:
     def _do():
+        # Default path: pull Sleeper's projections and score them with the
+        # league's own settings. `--projections` still overrides with a local
+        # file, for backtesting or a third-party projection set.
+        if not args.projections:
+            return lineup_with_projections(args.username, args.league, week=args.week)
+
         ctx = build_context(args.username, args.league)
         roster = ctx.get("my_roster") or {}
-        # Projections: agent should pass them in via --projections JSON file; default zero.
-        projections: dict = {}
-        if args.projections:
-            try:
-                with open(args.projections) as f:
-                    projections = json.load(f)
-            except Exception as e:
-                return {"error": f"Could not load projections: {e}"}
+        try:
+            with open(args.projections) as f:
+                projections = json.load(f)
+        except Exception as e:
+            return {"error": f"Could not load projections: {e}"}
         opt = optimal_lineup(roster, ctx.get("roster_positions") or [], projections=projections)
         return {"league": ctx["league"]["name"], "week": ctx.get("week"), "lineup": opt}
     _wrap("lineup", _do, {"username": args.username, "league": args.league}, args.json)
+
+
 
 
 def cmd_lineup_health(args) -> None:
@@ -637,8 +644,17 @@ def add_subparsers(subparsers) -> dict:
 
     p = subparsers.add_parser("lineup", help="Current vs optimal starters")
     _common_user_league(p)
-    p.add_argument("--projections", help="Path to JSON {player_id: projected_points}")
+    p.add_argument("--week", type=int, default=None,
+                   help="NFL week (default: current week from Sleeper state)")
+    p.add_argument("--projections",
+                   help="Override with a local JSON {player_id: projected_points}. "
+                        "Omit to use Sleeper's projections scored by league settings.")
     handlers["lineup"] = cmd_lineup
+
+    # `start-sit` is registered by the public CLI (cli/projections.py) rather
+    # than here — it prints a human table by default and the same envelope as
+    # these commands under --json, so a second registration would just be an
+    # argparse name conflict.
 
     p = subparsers.add_parser("lineup-health", help="Injury / bye / empty-slot scan")
     _common_user_league(p)

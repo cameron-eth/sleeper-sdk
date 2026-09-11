@@ -3,8 +3,8 @@
 **Skills (this directory)** are the high-level "what to do when the user
 asks X" specs. **CLI commands** (in the `python/src/sleeper/cli/`
 package — split across `values.py`, `trades.py`, `send_trade.py`,
-`analysis.py` — and `cli_agent.py`) are the low-level primitives skills
-orchestrate.
+`analysis.py`, `projections.py` — and `cli_agent.py`) are the low-level
+primitives skills orchestrate.
 
 ## Architecture
 
@@ -51,6 +51,7 @@ orchestrate.
 | `gm-mode` | `gm-mode` | none |
 | `find-trades` | `find-trades` | none |
 | `suggest-trades` | `suggest-trades` | none |
+| `start-sit` | `start-sit` (+ `projections`, `lineup`) | none |
 
 ### Authenticated reads (require `SLEEPER_TOKEN`)
 | Skill | CLI command |
