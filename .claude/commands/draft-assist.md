@@ -24,6 +24,7 @@ python3 scripts/draft_assist.py USERNAME --league NAME --once
 - Values come from `data/ktc/latest.json` (the committed daily snapshot) — no scrape, no token
 - Announces each new pick with its KTC value and pre-draft board rank; flags the user's own picks
 - Reprints best available: top N overall, plus top 5 per position with `|CLIFF` markers on value drops ≥400
+- Flags injuries from Sleeper's player data: `[IR]` `[OUT]` `[PUP]` `[DOUBT]` `[SUSP]` are loud (the player cannot help you now); `[q]` is quiet, because Questionable is a Week 1 blanket designation that most of the pool carries
 - Shows who's on the clock and how many picks until the user's turn (snake-aware)
 - Tracks the user's roster as it builds
 
@@ -32,6 +33,7 @@ python3 scripts/draft_assist.py USERNAME --league NAME --once
 - Read-only — it cannot make picks; draft in the Sleeper app
 - KTC is a **dynasty** market; in redraft leagues treat values as a market signal, not a ranking
 - K and DEF have no KTC values and never appear on the board
+- The board ranks on KTC value alone. It knows about **injuries** but not **depth-chart role** — a backup and a starter at the same value look identical, so verify snap share before recommending a late-round flier
 - If the user has no draft slot assigned yet, "your turn in N picks" is unavailable until Sleeper assigns slots
 
 ## When invoked as a skill

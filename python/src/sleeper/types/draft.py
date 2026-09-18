@@ -34,7 +34,7 @@ class DraftPick(BaseModel):
     draft_id: str
     player_id: str | None = None
     picked_by: str | None = None
-    roster_id: str | None = None
+    roster_id: int | None = None  # roster_id (int), matches Roster.roster_id
     round: int
     draft_slot: int | None = None
     pick_no: int

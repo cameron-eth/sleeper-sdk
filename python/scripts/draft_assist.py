@@ -31,6 +31,14 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 KTC_LATEST = REPO_ROOT / "data" / "ktc" / "latest.json"
 VALUED_POSITIONS = ("QB", "RB", "WR", "TE")
 
+# Loud tags mean the player cannot help you now; "Questionable" is a Week 1
+# blanket designation (most of the pool carries it) so it stays quiet.
+INJURY_TAGS = {
+    "IR": " [IR]", "Out": " [OUT]", "Doubtful": " [DOUBT]",
+    "PUP": " [PUP]", "Sus": " [SUSP]", "NA": " [NA]",
+    "Questionable": " [q]",
+}
+
 
 def norm(name: str) -> str:
     name = name.lower()
@@ -52,6 +60,32 @@ def load_board(value_key: str) -> dict[tuple[str, str], dict]:
     return board
 
 
+async def build_injury_map(client) -> dict[str, str]:
+    """norm_name -> short injury tag, from Sleeper's player database.
+
+    The KTC board prices a player on dynasty market value alone, so an IR
+    player renders identically to a healthy one. Joining Sleeper's injury
+    field is the only thing that stops the board recommending someone who
+    is not going to play.
+    """
+    try:
+        players = await client.get_all_players()
+    except Exception:
+        return {}
+    out = {}
+    for p in players.values():
+        status = getattr(p, "injury_status", None)
+        inactive = getattr(p, "status", None) in ("Inactive", "Injured Reserve")
+        if not status and not inactive:
+            continue
+        tag = INJURY_TAGS.get(status or "", " [OUT]" if inactive else "")
+        if status == "Questionable" and inactive:
+            tag = " [IR]"
+        if tag and p.full_name:
+            out[norm(p.full_name)] = tag
+    return out
+
+
 def snake_slot(pick_no: int, teams: int) -> int:
     idx = (pick_no - 1) % teams
     rnd = (pick_no - 1) // teams + 1
@@ -66,7 +100,7 @@ def fmt_pick_no(pick_no: int, teams: int) -> str:
 def print_board(available: list[dict], top: int) -> None:
     print(f"\n  BEST AVAILABLE (top {top} overall)")
     for i, p in enumerate(available[:top], 1):
-        print(f"   {i:>2}. {p['name']:<24} {p['position']:<3} {p['team'] or 'FA':<4} {p['value']:>5}")
+        print(f"   {i:>2}. {p['name']:<24} {p['position']:<3} {p['team'] or 'FA':<4} {p['value']:>5}{p.get('inj', '')}")
     for pos in VALUED_POSITIONS:
         pool = [p for p in available if p["position"] == pos][:5]
         if not pool:
@@ -75,7 +109,7 @@ def print_board(available: list[dict], top: int) -> None:
         for j, p in enumerate(pool):
             gap = pool[j - 1]["value"] - p["value"] if j else 0
             cliff = " |CLIFF" if j and gap >= 400 else ""
-            parts.append(f"{p['name']} {p['value']}{cliff}")
+            parts.append(f"{p['name']} {p['value']}{p.get('inj', '')}{cliff}")
         print(f"   {pos:<3}: " + "  ·  ".join(parts))
 
 
@@ -110,6 +144,9 @@ async def run(args: argparse.Namespace) -> None:
 
         board = load_board(value_key)
         board_by_key = dict(board)  # (norm_name, pos) -> rec
+        injuries = await build_injury_map(client)
+        for _k, _rec in board_by_key.items():
+            _rec["inj"] = injuries.get(norm(_rec["name"]), "")
         print(f"Draft co-pilot — {league.name if league else draft_id} | {teams} teams | "
               f"{'SF' if superflex else '1QB'} values | your slot: {my_slot or '?'}")
         print(f"KTC snapshot: {json.loads(KTC_LATEST.read_text())['date']} "
