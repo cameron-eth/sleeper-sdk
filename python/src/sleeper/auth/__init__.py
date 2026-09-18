@@ -13,6 +13,6 @@ Usage:
     client = SleeperAuthClient()
     pending = client.get_trades(league_id, statuses=["pending"])
 """
-from sleeper.auth.client import SleeperAuthClient, SleeperAuthError
+from sleeper.auth.client import SleeperAuthClient, SleeperAuthError, inspect_token
 
-__all__ = ["SleeperAuthClient", "SleeperAuthError"]
+__all__ = ["SleeperAuthClient", "SleeperAuthError", "inspect_token"]
