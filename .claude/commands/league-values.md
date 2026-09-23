@@ -23,14 +23,14 @@ python3 -m sleeper.cli league-values <username> [--league <name>] [--format sf|1
 ## Examples
 
 ```bash
-# camfleety's Meat Market dynasty roster
-python3 -m sleeper.cli league-values camfleety --league "Meat Market" --format sf
+# a dynasty superflex roster
+python3 -m sleeper.cli league-values <username> --league "<league>" --format sf
 
 # 1QB redraft
-python3 -m sleeper.cli league-values camfleety --league "OGs" --format 1qb
+python3 -m sleeper.cli league-values <username> --league "<league>" --format 1qb
 ```
 
 ## Notes
 
 - Uses current year automatically (no hardcoded season)
-- camfleety's leagues: The Meat Market (dynasty/SF), The OGs (keeper/SF), Ball Knowers, Da Skreets
+- Leagues resolve from the username at run time; do not hardcode one.

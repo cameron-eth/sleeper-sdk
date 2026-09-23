@@ -18,7 +18,7 @@ is a "what's the best move available right now?" sweep.
 ## How to run
 
 ```bash
-python3 -m sleeper.cli suggest-trades camfleety --league "OGs" --top 10
+python3 -m sleeper.cli suggest-trades <username> --league "<league>" --top 10
 ```
 
 ## How it differs from find-trades

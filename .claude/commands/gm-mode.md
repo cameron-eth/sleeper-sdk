@@ -35,17 +35,17 @@ The `gm-mode` command:
 
 ### Primary report
 ```bash
-python3 -m sleeper.cli gm-mode camfleety --league "Meat Market" --format sf
+python3 -m sleeper.cli gm-mode <username> --league "<league>" --format sf
 ```
 
 ### Analyze another owner in the same league
 ```bash
-python3 -m sleeper.cli gm-mode camfleety --league "Meat Market" --owner "someone_else" --format sf
+python3 -m sleeper.cli gm-mode <username> --league "<league>" --owner "someone_else" --format sf
 ```
 
 ### 1QB league
 ```bash
-python3 -m sleeper.cli gm-mode camfleety --league "Slime Season" --format 1qb
+python3 -m sleeper.cli gm-mode <username> --league "<league>" --format 1qb
 ```
 
 ## What to do with the output
@@ -62,22 +62,22 @@ The report prints:
 
 1. If archetype is **PRETENDER** → urgent sell-off of aging vets. Chain with:
    ```bash
-   python3 -m sleeper.cli find-trades camfleety --league "Meat Market" --mode downtiering --include "<aging vet name>"
+   python3 -m sleeper.cli find-trades <username> --league "<league>" --mode downtiering --include "<aging vet name>"
    ```
 
 2. If archetype is **REBUILDING** → accumulate picks/youth. Chain with:
    ```bash
-   python3 -m sleeper.cli find-trades camfleety --league "Meat Market" --mode upgrade --position <weak pos>
+   python3 -m sleeper.cli find-trades <username> --league "<league>" --mode upgrade --position <weak pos>
    ```
 
 3. If archetype is **CONTENDER** → close gaps, lock in wins. Chain with:
    ```bash
-   python3 -m sleeper.cli find-trades camfleety --league "Meat Market" --mode normal --position <weak pos>
+   python3 -m sleeper.cli find-trades <username> --league "<league>" --mode normal --position <weak pos>
    ```
 
 4. If archetype is **RELOADING** → selective moves. Use `suggest-trades` for the full league scan:
    ```bash
-   python3 -m sleeper.cli suggest-trades camfleety --league "Meat Market" --top 10
+   python3 -m sleeper.cli suggest-trades <username> --league "<league>" --top 10
    ```
 
 ## Key context

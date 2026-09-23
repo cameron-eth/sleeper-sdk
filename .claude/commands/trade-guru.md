@@ -4,7 +4,7 @@ argument-hint: "<username> [--league <name>] [goal]"
 ---
 # trade-guru
 
-Act as a dynasty trade analyst for camfleety's team in The Meat Market. Given a goal or a player of interest, explore trade scenarios, evaluate fairness, and recommend actionable deals.
+Act as a dynasty trade analyst for the requested user's team. Given a goal or a player of interest, explore trade scenarios, evaluate fairness, and recommend actionable deals.
 
 ## When to use this skill
 
@@ -20,19 +20,19 @@ When this skill is invoked, you should:
 
 1. **Get current roster state**
    ```bash
-   python3 -m sleeper.cli league-values camfleety --league "Meat Market" --format sf
+   python3 -m sleeper.cli league-values <username> --league "<league>" --format sf
    ```
 
-2. **Get full league roster rankings** to understand where camfleety sits and what other teams need
+2. **Get full league roster rankings** to understand where the user sits and what other teams need
    ```bash
-   python3 -m sleeper.cli roster-rank camfleety --league "Meat Market" --format sf
+   python3 -m sleeper.cli roster-rank <username> --league "<league>" --format sf
    ```
 
-3. **Find sell-high candidates on camfleety's roster**
+3. **Find sell-high candidates on the user's roster**
    ```bash
    python3 -m sleeper.cli buy-sell sell --format sf --min-trades 1
    ```
-   Cross-reference with camfleety's actual roster players.
+   Cross-reference with the user's actual roster players.
 
 4. **Find buy-low targets** that would improve the roster
    ```bash
@@ -58,18 +58,24 @@ When this skill is invoked, you should:
 ## Analysis framework
 
 When building trade recommendations:
-- **Roster construction**: What positions are deep/thin for camfleety?
-- **Win-now vs rebuild**: camfleety is 3-25 all-time — lean toward rebuild/youth
+- **Roster construction**: What positions are deep/thin for <username>?
+- **Win-now vs rebuild**: read the posture off `gm-mode` rather than
+  assuming one. A contender pays for production now; a rebuilder sells
+  aging vets for youth and picks. Guessing wrong inverts every
+  recommendation below.
 - **Target teams**: Who in the league has weak rosters and veteran players to sell?
 - **Value arbitrage**: Who is sell-high on KTC vs actual market?
 - **Age curve**: Prioritize players under 26 for dynasty value
 
 ## Key context
 
-- **camfleety's league**: The Meat Market (12-team dynasty, SF, league_id: 1328460395249172480)
-- **camfleety's record**: 3-25 all-time (needs a rebuild)
-- **Format**: Superflex (SF) — QBs are extremely valuable
-- **Username**: camfleety (no underscore)
+- **Whose team?** Never assume. The username is the skill's first argument;
+  if it is missing, ask. `sleeper whoami` resolves the token's own user.
+- **Which league?** `--league` takes a substring of the league name and
+  resolves against the user's current-season leagues. Omit it and the CLI
+  lists the choices. League IDs roll over every season, so never cache one.
+- **Format matters.** Superflex (`--format sf`) prices QBs far above
+  `1qb`; passing the wrong one silently misvalues every quarterback.
 
 ## Output format
 

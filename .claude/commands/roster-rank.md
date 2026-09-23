@@ -22,11 +22,11 @@ python3 -m sleeper.cli roster-rank <username> [--league <name>] [--format sf|1qb
 ## Examples
 
 ```bash
-# Rank all teams in The Meat Market (dynasty, SF)
-python3 -m sleeper.cli roster-rank camfleety --league "Meat Market" --format sf
+# Rank all teams in a dynasty superflex league
+python3 -m sleeper.cli roster-rank <username> --league "<league>" --format sf
 
 # 1QB format
-python3 -m sleeper.cli roster-rank camfleety --league "OGs" --format 1qb
+python3 -m sleeper.cli roster-rank <username> --league "<league>" --format 1qb
 ```
 
 ## Notes
@@ -34,4 +34,4 @@ python3 -m sleeper.cli roster-rank camfleety --league "OGs" --format 1qb
 - If `--league` is omitted and the user has only one league, it auto-selects
 - Player-to-KTC mapping uses name + position + team matching (~92% match rate)
 - Unmatched players (rookies not yet on KTC, etc.) count as 0 value
-- camfleety's dynasty league: **The Meat Market** (league_id: 1328460395249172480)
+- The dynasty league resolves from `--league`; do not hardcode an ID.
