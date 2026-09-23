@@ -12,6 +12,16 @@ Show KTC dynasty values for all players on your roster in a Sleeper league.
 python3 -m sleeper.cli league-values <username> [--league <name>] [--format sf|1qb]
 ```
 
+## Variants
+
+```bash
+# Public read — works for any username, no token needed
+python3 -m sleeper.cli league-values <username> --league "<league>"
+
+# Authenticated view of your own roster (needs SLEEPER_TOKEN)
+python3 -m sleeper.cli roster <username> --league "<league>"
+```
+
 ## What it does
 
 - Fetches the user's Sleeper leagues for the current season

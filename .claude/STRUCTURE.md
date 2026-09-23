@@ -36,38 +36,66 @@ primitives skills orchestrate.
 
 ## Skill ↔ CLI map
 
-### Read-only analysis
-| Skill | CLI command | Auth? |
+Skills are namespaced by subdirectory: `.claude/commands/trades/find.md`
+is invoked as `/trades:find`.
+
+### roster/ — the team you control
+| Skill | CLI | Auth? |
 |---|---|---|
-| `market-value` | `market-value` | none |
-| `league-values` | `league-values` | none |
-| `roster-rank` | `roster-rank` | none |
-| `picks` | `picks` | none |
-| `trending` | `trending` | none |
-| `buy-sell` | `buy-sell` | none |
-| `pe-ratio` | `pe-ratio` | none |
-| `ktc-trend` | `ktc-trend` | none |
-| `trade-check` | `trade-check` | none |
-| `gm-mode` | `gm-mode` | none |
-| `find-trades` | `find-trades` | none |
-| `suggest-trades` | `suggest-trades` | none |
-| `start-sit` | `start-sit` (+ `projections`, `lineup`) | none |
+| `/roster:lineup` | `lineup`, `lineup-health` | token |
+| `/roster:start-sit` | `start-sit` | none |
+| `/roster:projections` | `projections` | none |
+| `/roster:waivers` | `waivers` | token |
+| `/roster:values` | `league-values`, `roster` | none / token |
+| `/roster:picks` | `picks` | none |
+| `/roster:draft` | `scripts/draft_assist.py` | none |
+| `/roster:set-lineup` ✍ | `lineup-set` | token |
+| `/roster:moves` ✍ | `add`, `drop`, `waiver-claim` | token |
+| `/roster:slots` ✍ | `taxi-move`, `ir-move`, `activate` | token |
 
-### Authenticated reads (require `SLEEPER_TOKEN`)
-| Skill | CLI command |
+### trades/
+| Skill | CLI | Auth? |
+|---|---|---|
+| `/trades:find` | `find-trades` | none |
+| `/trades:check` | `trade-check` | none |
+| `/trades:suggest` | `suggest-trades` | none |
+| `/trades:partners` | `trade-partners` | none |
+| `/trades:proposed` | `proposed-trades` | token |
+| `/trades:inbox` | `inbox`, `outbox` | token |
+| `/trades:guru` | chains find → check → proposed | none |
+| `/trades:respond` ✍ | `trade-respond` | token |
+
+### market/ — player valuation, independent of any roster
+| Skill | CLI |
 |---|---|
-| `proposed-trades` | `proposed-trades` |
+| `/market:value` | `market-value` |
+| `/market:buy-sell` | `buy-sell` |
+| `/market:pe-ratio` | `pe-ratio` |
+| `/market:trending` | `trending` |
+| `/market:ktc-trend` | `ktc-trend` |
 
-### Composite skills (orchestrate multiple CLI commands)
+### league/
+| Skill | CLI | Auth? |
+|---|---|---|
+| `/league:rank` | `roster-rank` | none |
+| `/league:matchup` | `matchup` | token |
+| `/league:status` | `status`, `context`, `whoami`, `auth-check` | token |
+
+### strategy/ — composites
 | Skill | What it chains |
 |---|---|
-| `team-report` | `gm-mode` → `find-trades` → `pe-ratio` |
-| `trade-guru` | `find-trades` (multi-mode) → `trade-check` → `proposed-trades` |
-| `data-scientist` | open-ended analysis using any of the above |
+| `/strategy:gm-mode` | `gm-mode` |
+| `/strategy:team-report` | `gm-mode` → `find-trades` → `pe-ratio` |
+| `/strategy:data-scientist` | open-ended, any of the above |
 
-### Authenticated writes (no skill exposed — explicit user trigger only)
-- `send-trade` — fires a real `propose_trade` mutation. Documented in
-  CLI `--help` only; no skill markdown by design.
+✍ = write. Carries `disable-model-invocation: true` and previews before
+firing. `/roster:draft` is also user-invoked only — it polls in an
+unbounded loop.
+
+**Not exposed as a skill, by design:** `send-trade` fires a real
+`propose_trade`. Documented in CLI `--help` only; explicit user trigger.
+`execute` / `preview-show` are mechanics of the write flow rather than
+tasks, and are documented inside each write skill.
 
 ## Parallel execution principle
 
@@ -99,23 +127,37 @@ parallel:
 4. If there's pure math involved, extract it into a new
    `sleeper.analytics.<name>` module and write unit tests in
    `python/tests/test_<name>.py`.
-5. Create `<command-name>.md` in this directory describing:
-   - **When to use this skill** — natural-language triggers
-   - **How to run** — concrete CLI invocations
-   - **Useful follow-ups** — which other skills/commands chain in
-   - **Key context** — gotchas the agent must know
-6. Open a PR. CI must be green before merge.
+5. Create `commands/<category>/<name>.md` — pick the category from the
+   map above; it becomes the `/category:name` namespace. Required
+   frontmatter:
+   ```yaml
+   ---
+   description: "What it decides, then the phrasings a user actually types. CI rejects anything under 40 characters."
+   argument-hint: "<username> [--league <name>]"
+   # writes only:
+   disable-model-invocation: true
+   ---
+   ```
+   Then the body: **When to use this skill** (triggers), **How to run**
+   (concrete invocations), **Key context** (gotchas the agent must know).
+   Take the user and league as arguments — never hardcode either.
+6. Run `python3 scripts/sync_skills.py` to regenerate the Codex mirror.
+   CI fails if you skip this.
+7. Open a PR. CI must be green before merge.
 
 ## Repository hygiene rules
 
-- **No file over 750 LOC.** Current largest: `cli/values.py` at 586.
+- **No file over 750 LOC.** Two files currently exceed this and are the
+  standing refactor targets: `agent/helpers.py` at 773 and `cli_agent.py`
+  at 767. Nothing enforces the rule, so it is on the author to check.
+  (`cli/values.py`, named here as "current largest at 586" until
+  2026-09, is 577 and no longer close to the top.)
 - **Pure logic lives in `analytics/`** and is unit-tested. Recent
   extractions: `chip_value.py`, `pick_value.py`, `find_trades_engine.py`.
 - **CLI command handlers are thin** — they orchestrate analytics
   primitives, never re-implement math inline.
 - **Shared CLI helpers live in `cli/_common.py`** — every command module
   imports from there (DRY by convention).
+- **Auth code is isolated in `auth/`**; every write goes through the
+  preview/execute pattern in `agent/preview.py`.
 - **Skills are markdown-only** — never Python in `.claude/commands/`.
-- CLI command handlers are thin wrappers that orchestrate analytics
-- Auth code is isolated in `auth/`
-- Skills are markdown-only; never put Python in `.claude/commands/`
