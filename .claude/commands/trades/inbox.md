@@ -1,0 +1,31 @@
+---
+description: "Pending incoming and outgoing trade offers with KTC valuation of each side. Requires SLEEPER_TOKEN. Use for \"any trade offers\", \"check my inbox\", \"what did they offer me\", \"what's still pending\"."
+argument-hint: "<username> [--league <name>]"
+---
+# trades:inbox
+
+Pending trade offers, valued. Incoming (`inbox`) and the ones you have
+sent that are still open (`outbox`).
+
+## When to use this skill
+
+- "Any trade offers?" / "Check my inbox"
+- "What did they offer me?"
+- "What offers do I have out?"
+
+## How to run
+
+```bash
+python3 -m sleeper.cli inbox <username> --league "<league>"
+python3 -m sleeper.cli outbox <username> --league "<league>"
+```
+
+## Key context
+
+- **Requires `SLEEPER_TOKEN`** — these hit Sleeper's private GraphQL API.
+  If it errors, `/league:status` runs `auth-check` to confirm the token.
+- **Read the offer before recommending a verdict.** `/trades:check` scores
+  a specific give/get with the value adjustment, which prices the
+  consolidation premium that a raw KTC sum misses.
+- Accepting or rejecting is a write — `/trades:respond`, which previews.
+- Historical trades (completed, rejected, cancelled) are `/trades:proposed`.
