@@ -25,17 +25,17 @@ with you. Combines three signals into a single engagement score:
 
 ### Default — top 12 partners
 ```bash
-python3 -m sleeper.cli trade-partners camfleety --league "Meat Market"
+python3 -m sleeper.cli trade-partners <username> --league "<league>"
 ```
 
 ### Top 5 only
 ```bash
-python3 -m sleeper.cli trade-partners camfleety --league "OGs" --top 5
+python3 -m sleeper.cli trade-partners <username> --league "<league>" --top 5
 ```
 
 ### 1QB league
 ```bash
-python3 -m sleeper.cli trade-partners camfleety --league "Slime Season" --format 1qb
+python3 -m sleeper.cli trade-partners <username> --league "<league>" --format 1qb
 ```
 
 ## Reading the output

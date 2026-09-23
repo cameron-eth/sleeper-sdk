@@ -4,7 +4,7 @@ argument-hint: "<username> [--league <name>]"
 ---
 # team-report
 
-Generate a comprehensive dynasty team analysis report for camfleety in The Meat Market. Combines roster values, market signals, trending players, and pick assets into a single data-driven report.
+Generate a comprehensive dynasty team analysis report for the requested user and league. Combines roster values, market signals, trending players, and pick assets into a single data-driven report.
 
 ## When to use this skill
 
@@ -19,24 +19,24 @@ Run ALL of the following commands and synthesize the results into a unified repo
 
 ### Step 1: Current roster
 ```bash
-python3 -m sleeper.cli league-values camfleety --league "Meat Market" --format sf
+python3 -m sleeper.cli league-values <username> --league "<league>" --format sf
 ```
 
 ### Step 2: League standings by roster value
 ```bash
-python3 -m sleeper.cli roster-rank camfleety --league "Meat Market" --format sf
+python3 -m sleeper.cli roster-rank <username> --league "<league>" --format sf
 ```
 
 ### Step 3: Pick assets
 ```bash
-python3 -m sleeper.cli picks camfleety --league "Meat Market" --format sf --owner camfleety
+python3 -m sleeper.cli picks <username> --league "<league>" --format sf --owner <username>
 ```
 
-### Step 4: Trending players (check if any on camfleety's roster are rising/falling)
+### Step 4: Trending players (check if any on the user's roster are rising/falling)
 ```bash
 python3 -m sleeper.cli trending --format sf --top 30
 ```
-Cross-reference results with camfleety's roster.
+Cross-reference results with the user's roster.
 
 ### Step 5: Market value check on top 3-5 most valuable players
 ```bash
@@ -45,7 +45,7 @@ python3 -m sleeper.cli market-value "[top player 2]" --format sf
 # etc.
 ```
 
-### Step 6: Sell-high opportunities on camfleety's roster
+### Step 6: Sell-high opportunities on the user's roster
 ```bash
 python3 -m sleeper.cli buy-sell sell --format sf --min-trades 1
 ```
@@ -55,7 +55,7 @@ python3 -m sleeper.cli buy-sell sell --format sf --min-trades 1
 Compile results into this format:
 
 ---
-## 🏈 Dynasty Team Report — camfleety (The Meat Market)
+## 🏈 Dynasty Team Report — <username> (<league>)
 *Date: [current date]*
 
 ### Roster Overview
@@ -82,7 +82,7 @@ Owned future picks with KTC values and total pick capital
 
 ## Key context
 
-- **camfleety's league**: The Meat Market (12-team dynasty, SF)
-- **Record**: 3-25 (deep rebuild mode)
+- **League**: resolved from `--league` at run time; read size and format off the league itself rather than assuming.
+
 - **Format**: Superflex — QB value is premium
-- **Username**: camfleety
+

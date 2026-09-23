@@ -27,7 +27,7 @@ python3 -m sleeper.cli trending --format sf --top 100 --direction both
 
 ### Full league roster breakdown
 ```bash
-python3 -m sleeper.cli roster-rank camfleety --league "Meat Market" --format sf
+python3 -m sleeper.cli roster-rank <username> --league "<league>" --format sf
 ```
 
 ### Market value analysis for specific players
@@ -73,14 +73,14 @@ trades = fetch_ktc_trades()
 ## Analysis tips
 
 - For dynasty age analysis: players under 24 have highest dynasty upside
-- SF format: QBs are 1.5-3x more valuable than 1QB — use `--format sf` for The Meat Market
+- SF format: QBs are 1.5-3x more valuable than in 1QB — pass `--format sf` for any superflex league
 - KTC caps at 9,999 — top 5-10 players (Chase, Allen, Mahomes) may trade above this
 - Trend data (`overall_trend`) is 7-day point change — useful for news-driven value swings
 - Trade data is recent (~last few weeks) — good for current market, not historical
 
 ## Key context
 
-- **camfleety's league**: The Meat Market (12-team dynasty, SF, league_id: 1328460395249172480)
-- **Username**: camfleety
-- **SDK root**: `/Users/cameron/Documents/APP-BUILDS/sleeper-sdk/python/`
+- **League**: resolved from `--league` at run time. Never hardcode a league ID — they roll over every season.
+
+- **SDK root**: the `python/` directory of this repository.
 - **SSL note**: System Python 3.9 uses curl fallback for KTC fetches (httpx SSL issue)

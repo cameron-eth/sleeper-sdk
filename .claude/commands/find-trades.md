@@ -29,19 +29,19 @@ trades get correctly ranked.
 
 ### Normal mode — find a fair trade for an RB
 ```bash
-python3 -m sleeper.cli find-trades camfleety --league "OGs" \
+python3 -m sleeper.cli find-trades <username> --league "<league>" \
   --mode normal --position RB
 ```
 
 ### Upgrade mode — get more value than you give
 ```bash
-python3 -m sleeper.cli find-trades camfleety --league "Meat Market" \
+python3 -m sleeper.cli find-trades <username> --league "<league>" \
   --mode upgrade --position WR
 ```
 
 ### Downtiering mode — rebuild flow, ship aging stars
 ```bash
-python3 -m sleeper.cli find-trades camfleety --league "OGs" \
+python3 -m sleeper.cli find-trades <username> --league "<league>" \
   --mode downtiering --include "David Montgomery"
 ```
 
@@ -64,7 +64,7 @@ The command prints a ranked table:
 
 1. If you find a trade you like → preview it:
    ```bash
-   python3 -m sleeper.cli send-trade camfleety --league "OGs" \
+   python3 -m sleeper.cli send-trade <username> --league "<league>" \
      --to-roster <id> --send <give> --get <get> --dry-run
    ```
 

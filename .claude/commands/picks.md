@@ -23,17 +23,17 @@ python3 -m sleeper.cli picks <username> [--league <name>] [--format sf|1qb] [--o
 ## Examples
 
 ```bash
-# All picks in The Meat Market
-python3 -m sleeper.cli picks camfleety --league "Meat Market" --format sf
+# All picks in the league
+python3 -m sleeper.cli picks <username> --league "<league>" --format sf
 
 # Only traded picks (picks that have changed hands)
-python3 -m sleeper.cli picks camfleety --league "Meat Market" --traded-only
+python3 -m sleeper.cli picks <username> --league "<league>" --traded-only
 
-# Show only camfleety's picks
-python3 -m sleeper.cli picks camfleety --league "Meat Market" --owner camfleety
+# Show only the user's picks
+python3 -m sleeper.cli picks <username> --league "<league>" --owner <username>
 
 # HarryBushWacker's pick haul
-python3 -m sleeper.cli picks camfleety --league "Meat Market" --owner Harry --traded-only
+python3 -m sleeper.cli picks <username> --league "<league>" --owner Harry --traded-only
 ```
 
 ## Output columns
@@ -50,6 +50,6 @@ python3 -m sleeper.cli picks camfleety --league "Meat Market" --owner Harry --tr
 ## Notes
 
 - Pick tiers are based on league size: Early = top 1/3, Mid = middle 1/3, Late = bottom 1/3
-- The Meat Market is 12 teams: P01-P04 = Early, P05-P08 = Mid, P09-P12 = Late
+- Pick tiers follow league size. In a 12-team league: P01-P04 = Early, P05-P08 = Mid, P09-P12 = Late
 - 2026 picks may already be gone (drafted) depending on the time of year
-- camfleety's dynasty league: **The Meat Market** (league_id: 1328460395249172480)
+- The dynasty league resolves from `--league`; do not hardcode an ID.

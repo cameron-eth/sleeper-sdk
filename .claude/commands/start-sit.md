@@ -33,25 +33,25 @@ Confidence is `margin / (margin + 3.0)` — continuous, so no decision hinges on
 
 ```bash
 # The basic question
-python3 -m sleeper.cli start-sit camfleety --league "Meat Market" \
+python3 -m sleeper.cli start-sit <username> --league "<league>" \
   --players "Daniel Jones" "Deshaun Watson"
 ```
 
 ```bash
 # Two flex slots, three candidates — margin is #2 vs #3, the choice actually being made
-python3 -m sleeper.cli start-sit camfleety --league "Meat Market" --slots 2 \
+python3 -m sleeper.cli start-sit <username> --league "<league>" --slots 2 \
   --players "Jordan Addison" "Parker Washington" "Zavion Thomas"
 ```
 
 ```bash
 # A future week, with the stat lines behind each projection
-python3 -m sleeper.cli start-sit camfleety --league "Meat Market" --week 6 --verbose \
+python3 -m sleeper.cli start-sit <username> --league "<league>" --week 6 --verbose \
   --players "Jordan Addison" "Parker Washington"
 ```
 
 ```bash
 # Whole-lineup version: current vs optimal starters, league-scored
-python3 -m sleeper.cli lineup camfleety --league "Meat Market"
+python3 -m sleeper.cli lineup <username> --league "<league>"
 ```
 
 ```bash

@@ -11,7 +11,7 @@ math. Hits Sleeper's private GraphQL endpoint via `SLEEPER_TOKEN`.
 ## When to use this skill
 
 - "What trades are happening in the league?"
-- "Show me historical trades in OGs"
+- "Show me historical trades in <league>"
 - "Who's buying / selling?"
 - "Who fleeced who in the offseason?"
 - "What did <user> trade for?"
@@ -45,18 +45,18 @@ export SLEEPER_TOKEN='eyJhbGc...'
 
 ### See every historical trade in a league
 ```bash
-python3 -m sleeper.cli proposed-trades camfleety --league "OGs"
+python3 -m sleeper.cli proposed-trades <username> --league "<league>"
 ```
 
 ### Filter to specific users (case-insensitive substring on display name)
 ```bash
-python3 -m sleeper.cli proposed-trades camfleety --league "OGs" \
+python3 -m sleeper.cli proposed-trades <username> --league "<league>" \
   --user romanempire ssyork zaybanga
 ```
 
 ### Filter by status
 ```bash
-python3 -m sleeper.cli proposed-trades camfleety --league "Meat Market" \
+python3 -m sleeper.cli proposed-trades <username> --league "<league>" \
   --status complete
 ```
 
