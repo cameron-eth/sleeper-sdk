@@ -8,10 +8,19 @@ start/sit answers.
 
 Quirks worth knowing, all established empirically:
 
-* **`position` does not accept multiple values.** Repeating the param
-  (`&position=QB&position=RB`) silently keeps only the last one, and
-  `position=QB,RB` returns `[]`. Passing a list here fans out one request per
-  position concurrently and merges, deduped by `player_id`.
+* **Multiple positions need the bracket form `position[]`.** Repeating the
+  plain param (`&position=QB&position=RB`) silently keeps only the *last*
+  one, and `position=QB,RB` returns `[]` — both fail quietly, which is why
+  this module always sends `position[]`. The bracket form unions them in a
+  single request: verified against week 3 of 2026, `position[]` for
+  QB/RB/TE/WR returned exactly the 3,116 rows of the four single-position
+  responses combined, same `player_id` set, no duplicates. It works the same
+  way on `/stats/`.
+* **`order_by` is accepted and ignored.** `order_by=ppr`, `order_by=pts_ppr`
+  and `order_by=bogus` all return a byte-identical, *unsorted* body — the
+  leading rows carry no `pts_ppr` at all. It is sent because the app sends
+  it; never rely on the response being ordered. Sort client-side
+  (`enrichment.projections.rank_projections` does).
 * **Omitting `position` returns the entire NFL** — ~9.4k rows including
   offensive linemen and long snappers, ~5.7 MB. Always pass positions unless
   you truly want that.
@@ -22,7 +31,6 @@ Quirks worth knowing, all established empirically:
 """
 from __future__ import annotations
 
-import asyncio
 from typing import Any, Iterable, Sequence, Union
 
 from sleeper.http.client import HttpClient
@@ -74,28 +82,29 @@ class ProjectionsApi:
         season_type: str,
         order_by: str | None,
     ) -> list[PlayerProjection]:
-        base: dict[str, Any] = {"season_type": season_type}
+        """One request, however many positions — see the module docstring.
+
+        `positions=None` omits the param entirely, which returns every
+        position in the NFL (~9.4k rows).
+        """
+        params: dict[str, Any] = {"season_type": season_type}
         if order_by:
-            base["order_by"] = order_by
+            params["order_by"] = order_by
+        if positions:
+            # Bracket form. The plain `position` param cannot express a union
+            # and fails silently when asked to; never send it.
+            params["position[]"] = positions
 
-        if not positions:
-            data = await self._http.get(path, params=base)
-            return [PlayerProjection.model_validate(d) for d in data or []]
+        data = await self._http.get(path, params=params)
 
-        # One request per position — the API cannot union them itself.
-        async def one(pos: str) -> list:
-            params = dict(base, position=pos)
-            return await self._http.get(path, params=params) or []
-
-        batches = await asyncio.gather(*(one(p) for p in positions))
-
-        # A player eligible at two requested positions (e.g. a WR listed with
-        # RB among fantasy_positions) comes back in both batches. Keep first.
+        # Sleeper has not been observed to repeat a player across positions in
+        # one response, but a player eligible at two of them (a WR carrying RB
+        # in `fantasy_positions`) is exactly the row that would, and a caller
+        # counting starters must not see them twice. Keep the first.
         merged: dict[str, PlayerProjection] = {}
-        for batch in batches:
-            for d in batch:
-                proj = PlayerProjection.model_validate(d)
-                merged.setdefault(proj.player_id, proj)
+        for record in data or []:
+            proj = PlayerProjection.model_validate(record)
+            merged.setdefault(proj.player_id, proj)
         return list(merged.values())
 
     # -- projections --------------------------------------------------------
@@ -115,9 +124,9 @@ class ProjectionsApi:
         Args:
             position: One position, a sequence of them, or None for every
                 position in the league (large — see module docstring).
-            order_by: Sleeper-side sort key, e.g. `pts_ppr`. Only meaningful
-                for a single position; with a fan-out each batch is sorted
-                independently, so re-sort the merged list yourself.
+            order_by: Sent for parity with the app's own request, but
+                Sleeper ignores it and the body comes back unsorted. Sort the
+                result yourself.
         """
         return await self._fetch(
             f"/projections/{sport}/{season}/{week}",
