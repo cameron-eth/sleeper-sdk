@@ -1,0 +1,40 @@
+---
+description: "Move a player to the taxi squad or IR, or activate one back to the active roster. Writes to a real league; previews first and requires confirmation."
+argument-hint: "<username> --player \"<name>\" [--league <name>]"
+disable-model-invocation: true
+---
+# roster:slots
+
+Taxi squad and injured-reserve moves.
+
+> **Every write previews by default.** Running the command without
+> `--execute` builds the exact payload Sleeper would receive, prints it with
+> a `preview_id`, and caches it to `~/.sleeper-sdk/previews/` for 10 minutes.
+> Nothing has happened yet. `sleeper preview-show <id>` re-reads it and
+> `sleeper execute <id>` (or re-running with `--execute`) fires it.
+>
+> **Show the preview to the user and get a yes before executing.** This
+> mutates a real roster in a real league, and several of these moves cannot
+> be undone from the SDK.
+
+## How to run
+
+```bash
+python3 -m sleeper.cli taxi-move <username> --league "<league>" --player "Name"
+python3 -m sleeper.cli ir-move   <username> --league "<league>" --player "Name"
+python3 -m sleeper.cli activate  <username> --league "<league>" --player "Name"
+
+# After the user confirms
+python3 -m sleeper.cli execute <preview_id>
+```
+
+## Key context
+
+- **Eligibility is league-configured and the SDK does not pre-validate it.**
+  Taxi squads usually restrict by years of experience; IR usually requires an
+  actual injury designation. Sleeper rejects an ineligible move at execute
+  time, so a clean preview does not guarantee it will land.
+- **A taxi move can expose a player to waivers** in some league settings.
+  Worth stating before executing, not after.
+- Activating from IR needs an open active roster spot — if the roster is
+  full, pair with a drop via `/roster:moves` first.

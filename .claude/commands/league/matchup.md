@@ -1,0 +1,30 @@
+---
+description: "This week's head-to-head matchup for a team: both lineups, projected totals and the margin. Use for \"who am I playing\", \"what's my matchup\", \"am I favored this week\"."
+argument-hint: "<username> [--league <name>]"
+---
+# league:matchup
+
+This week's head-to-head — both starting lineups side by side with
+projected totals.
+
+## When to use this skill
+
+- "Who am I playing this week?"
+- "What's my matchup look like?"
+- "Am I favored?"
+
+## How to run
+
+```bash
+python3 -m sleeper.cli matchup <username> --league "<league>"
+```
+
+## Key context
+
+- A projected margin is not a forecast of the result — weekly variance in
+  fantasy is wide enough that a 10-point projected edge loses often. Say
+  "favored", not "winning".
+- If the matchup is close, `/roster:lineup` is the actionable follow-up:
+  an unoptimized slot is usually worth more than any waiver move.
+- **Median-match leagues:** some leagues add a second weekly result against
+  the league median, so the head-to-head alone does not determine the record.

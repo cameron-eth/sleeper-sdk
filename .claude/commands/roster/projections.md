@@ -1,0 +1,39 @@
+---
+description: "Sleeper's weekly projections for a position group, optionally re-scored under a league's own scoring settings. Use for \"what is X projected for\", \"top projected WRs this week\", \"show me week N projections\"."
+argument-hint: "[--league <name>] [--week N] [--position QB RB WR TE]"
+---
+# roster:projections
+
+The same weekly numbers the Sleeper app shows, ranked — and optionally
+re-scored under a league's real scoring settings instead of generic PPR.
+
+## When to use this skill
+
+- "What's X projected for this week?"
+- "Top projected WRs?"
+- "Show me week 8 projections"
+
+## How to run
+
+```bash
+# Current week, default skill positions
+python3 -m sleeper.cli projections --position QB RB WR TE
+
+# Scored with a league's own settings rather than generic PPR
+python3 -m sleeper.cli projections --league "<league>" --week 3
+```
+
+## Key context
+
+- **League scoring is not a detail.** A 6-point passing TD, TE premium or
+  bonus scoring moves a QB or TE by several points — often more than the
+  margin a lineup decision turns on. Pass `--league` whenever the answer
+  will inform a real start/sit call.
+- **Most rows are filler.** A position sweep returns every rostered *and*
+  unrostered player; only ~12% carry a real forecast. The command filters
+  these, but do not be surprised by the raw counts.
+- **Kicker and defense totals drift slightly** from the app's. Sleeper
+  projects `fgmiss_30_39`/`fgmiss_40_49` but leagues score plain
+  `fgmiss`, so that rule cannot be priced. Skill positions are unaffected.
+- For a direct "start X or Y" question, `/roster:start-sit` is better —
+  it handles byes, injury designations and a confidence band.
