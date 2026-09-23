@@ -1,3 +1,7 @@
+---
+description: "Targeted trade search with positional filters. Builds 1-chip and 2-chip packages from your roster and ranks them with the KTC value adjustment. Use for \"find me a trade for an RB\", \"who can I get for X\", \"I need to upgrade my WR2\"."
+argument-hint: "<username> [--league <name>] [--position POS...]"
+---
 # find-trades
 
 Targeted trade search with positional filters. Builds 1-chip and 2-chip

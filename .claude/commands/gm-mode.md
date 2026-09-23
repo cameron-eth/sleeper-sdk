@@ -1,3 +1,7 @@
+---
+description: "Classify a dynasty team as CONTENDER, RELOADING, REBUILDING or PRETENDER, then recommend a trade posture to match. Use for \"what kind of team am I\", \"am I contending or rebuilding\", \"should I be buying or selling\"."
+argument-hint: "<username> [--league <name>] [--format sf|1qb]"
+---
 # gm-mode
 
 Full dynasty team analysis with archetype classification. Tells the owner whether they're a **CONTENDER**, **RELOADING**, **REBUILDING**, or **PRETENDER** team, then recommends trade strategy to match.

@@ -1,3 +1,7 @@
+---
+description: "Whole-league 1-for-1 trade sweep surfacing deals that correct positional imbalance. Broader and less targeted than find-trades. Use for \"suggest some trades\", \"what is the best trade available right now\"."
+argument-hint: "<username> [--league <name>] [--top N]"
+---
 # suggest-trades
 
 Whole-league 1-for-1 trade scan that surfaces trades correcting positional

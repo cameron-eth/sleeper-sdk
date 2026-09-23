@@ -1,3 +1,7 @@
+---
+description: "Player KTC value history from the local daily snapshots, plus biggest movers over a window. Use for \"how has X's value changed\", \"is X trending up or down\", \"what did X cost a month ago\"."
+argument-hint: "player <name> | movers [--days N]"
+---
 # ktc-trend
 
 Reads the local daily KTC snapshot history (`data/ktc/<date>.json`) and

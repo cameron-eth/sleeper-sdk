@@ -1,3 +1,7 @@
+---
+description: "One player's actual traded price vs their KTC listed value, derived from real trade data. Use for \"what is X actually worth\", \"is X overpriced\", \"what would it cost to get X\"."
+argument-hint: "\"<player name>\" [--format sf|1qb]"
+---
 # market-value
 
 Analyze a player's actual market value vs their KTC listed value, using real trade data.

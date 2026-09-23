@@ -1,3 +1,7 @@
+---
+description: "Future draft pick assets in a dynasty league with KTC values and current ownership. Use for \"who owns which picks\", \"what are my picks worth\", \"show me traded picks\"."
+argument-hint: "<username> [--league <name>] [--owner <name>] [--traded-only]"
+---
 # picks
 
 Show all future draft pick assets in a Sleeper dynasty league with their current KTC values.

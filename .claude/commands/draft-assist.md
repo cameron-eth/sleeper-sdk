@@ -1,3 +1,8 @@
+---
+description: "Live draft co-pilot: polls a Sleeper draft and prints a KTC-valued best-available board after every pick. Use during or just before a draft — \"who should I take\", \"best available\", \"draft board\"."
+argument-hint: "<username> --league <name> [--once]"
+disable-model-invocation: true
+---
 # draft-assist
 
 Live draft co-pilot: polls a Sleeper draft and prints a KTC-valued best-available board after every pick.
