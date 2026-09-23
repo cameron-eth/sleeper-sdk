@@ -1,0 +1,90 @@
+name: Skills
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - '.claude/commands/**'
+      - '.agents/skills/**'
+      - 'scripts/sync_skills.py'
+      - '.github/workflows/skills.yml'
+  push:
+    branches: [main]
+    paths:
+      - '.claude/commands/**'
+      - '.agents/skills/**'
+      - 'scripts/sync_skills.py'
+      - '.github/workflows/skills.yml'
+
+concurrency:
+  group: skills-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  skills:
+    name: validate + mirror in sync
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - run: pip install pyyaml
+
+      # Every skill needs a real description. Without one the harness falls
+      # back to the filename, and the skill reaches the model as
+      # `gm-mode: gm-mode` — invisible to routing but silently "present".
+      - name: Every skill has routable frontmatter
+        run: |
+          python3 - <<'PY'
+          import pathlib, re, sys, yaml
+          fail = []
+          files = sorted(pathlib.Path(".claude/commands").rglob("*.md"))
+          if not files:
+              sys.exit("no commands found — did the tree move?")
+          for p in files:
+              m = re.match(r"^---\n(.*?)\n---\n", p.read_text(), re.S)
+              if not m:
+                  fail.append(f"{p}: no frontmatter"); continue
+              try:
+                  d = yaml.safe_load(m.group(1)) or {}
+              except yaml.YAMLError as e:
+                  fail.append(f"{p}: invalid YAML: {e}"); continue
+              desc = (d.get("description") or "").strip()
+              if not desc:
+                  fail.append(f"{p}: missing description")
+              elif len(desc) < 40:
+                  fail.append(f"{p}: description too short to route on ({len(desc)}ch)")
+              elif desc == p.stem:
+                  fail.append(f"{p}: description is just the filename")
+          print("\n".join(fail) if fail else f"{len(files)} skills OK")
+          sys.exit(1 if fail else 0)
+          PY
+
+      # .claude/commands is the source of truth; .agents/skills is generated.
+      # They used to be hand-maintained copies, which is a fork waiting to
+      # happen. This is the guard that keeps them honest.
+      - name: Codex mirror is in sync
+        run: python3 scripts/sync_skills.py --check
+
+      # A skill that documents a CLI command which no longer exists sends the
+      # agent to run something that will fail.
+      - name: Skills reference real CLI commands
+        working-directory: python
+        run: |
+          pip install -e . >/dev/null
+          python3 - <<'PY'
+          import pathlib, re, subprocess, sys
+          usage = subprocess.run([sys.executable, "-m", "sleeper.cli", "--help"],
+                                 capture_output=True, text=True).stdout
+          known = set(re.search(r"\{([^}]*)\}", usage).group(1).split(","))
+          bad = []
+          for p in sorted(pathlib.Path("../.claude/commands").rglob("*.md")):
+              for cmd in set(re.findall(r"sleeper\.cli ([a-z][a-z-]+)", p.read_text())):
+                  if cmd not in known:
+                      bad.append(f"{p.name}: references unknown CLI command '{cmd}'")
+          print("\n".join(bad) if bad else f"all CLI references valid ({len(known)} commands)")
+          sys.exit(1 if bad else 0)
+          PY
