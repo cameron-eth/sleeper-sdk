@@ -1,3 +1,7 @@
+---
+description: "Rank every team in a Sleeper dynasty league by total KTC roster value. Use for \"who has the best roster\", \"where do I rank\", \"power rankings by value\"."
+argument-hint: "<username> [--league <name>] [--format sf|1qb]"
+---
 # roster-rank
 
 Rank every team in a Sleeper dynasty league by total KTC roster value.

@@ -1,3 +1,7 @@
+---
+description: "Find players trading below (buy-low) or above (sell-high) their KTC listed value in real trade data. Use for \"who should I buy low on\", \"who's a sell-high candidate\", \"who is trading under value\"."
+argument-hint: "<buy|sell> [--format sf|1qb] [--top N] [--position POS]"
+---
 # buy-sell
 
 Find players trading significantly below (buy-low) or above (sell-high) their KTC listed value in actual trades.

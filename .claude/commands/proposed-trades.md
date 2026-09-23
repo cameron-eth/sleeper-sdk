@@ -1,3 +1,7 @@
+---
+description: "Every trade in a league — pending, completed, rejected or cancelled — with KTC valuation and a per-side win/loss verdict. Requires SLEEPER_TOKEN. Use for \"what trades are happening\", \"who fleeced who\", \"show league trade history\"."
+argument-hint: "<username> [--league <name>] [--status STATUS]"
+---
 # proposed-trades
 
 Lists every trade in a league — pending, completed, rejected, cancelled —

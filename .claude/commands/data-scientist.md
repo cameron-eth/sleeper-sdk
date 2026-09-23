@@ -1,3 +1,7 @@
+---
+description: "Open-ended dynasty analytics across a whole league using the Sleeper SDK and KTC data. Use for exploratory questions no single command answers — age curves, league-wide market inefficiencies, pick-heavy vs player-heavy team profiles, cohort studies."
+argument-hint: "<question>"
+---
 # data-scientist
 
 Act as a dynasty fantasy football data scientist. Use the Sleeper SDK + KTC data to answer analytical questions, find market inefficiencies, and generate insights across the league.

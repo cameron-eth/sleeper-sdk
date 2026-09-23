@@ -1,3 +1,7 @@
+---
+description: "Answer \"should I start X or Y this week\" using Sleeper's own weekly projections re-scored under the league's real scoring settings, with byes and injury designations handled. Use for any weekly lineup question."
+argument-hint: "<username> --players \"<p1>\" \"<p2>\" [--league <name>] [--week N]"
+---
 # start-sit
 
 Answer "should I start X or Y this week?" using Sleeper's own weekly projections, re-scored under the league's actual scoring settings, with bye weeks and injury designations handled.

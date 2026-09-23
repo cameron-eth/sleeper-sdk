@@ -1,3 +1,7 @@
+---
+description: "Player P/E ratio — KTC market price divided by real fantasy production (FFPG) — to surface overhyped names and buy-low candidates. Use for \"who is overpriced right now\", \"who is cheap relative to production\"."
+argument-hint: "[--format sf|1qb] [--top N] [--position POS]"
+---
 # pe-ratio
 
 Computes a player's "P/E ratio" — KTC market price ÷ real-world fantasy

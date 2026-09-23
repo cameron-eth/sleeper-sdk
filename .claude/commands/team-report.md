@@ -1,3 +1,7 @@
+---
+description: "Composite dynasty team report chaining roster values, league rankings, pick assets, trends and market signals into one synthesis. Use for \"give me a full team report\", \"how does my team look right now\"."
+argument-hint: "<username> [--league <name>]"
+---
 # team-report
 
 Generate a comprehensive dynasty team analysis report for camfleety in The Meat Market. Combines roster values, market signals, trending players, and pick assets into a single data-driven report.

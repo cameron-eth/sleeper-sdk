@@ -1,3 +1,7 @@
+---
+description: "Rank other owners in a league by trade-partner compatibility, combining archetype synergy, positional fit and past trade history. Use for \"who should I trade with\", \"who is my best trade partner\"."
+argument-hint: "<username> [--league <name>] [--top N]"
+---
 # trade-partners
 
 Ranks every other owner in a league by **trade-partner compatibility**

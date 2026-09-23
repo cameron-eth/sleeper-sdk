@@ -1,3 +1,7 @@
+---
+description: "KTC dynasty values for every player on one roster in a Sleeper league. Use for \"what is my roster worth\", \"show me my players' values\"."
+argument-hint: "<username> [--league <name>] [--format sf|1qb]"
+---
 # league-values
 
 Show KTC dynasty values for all players on your roster in a Sleeper league.

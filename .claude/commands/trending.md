@@ -1,3 +1,7 @@
+---
+description: "Players with the biggest 7-day KTC dynasty value movement, up or down. Use for \"who is rising\", \"who is falling\", \"biggest movers this week\"."
+argument-hint: "[--direction up|down|both] [--top N] [--position POS]"
+---
 # trending
 
 Show players with the biggest KTC dynasty value movement over the last 7 days.

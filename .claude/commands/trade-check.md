@@ -1,3 +1,7 @@
+---
+description: "Evaluate one specific proposed trade with KTC values — what you give vs what you get, plus a verdict. Use for \"is this trade fair\", \"evaluate X for Y\", \"should I accept this\"."
+argument-hint: "--give \"<p1>\" [...] --get \"<p1>\" [...]"
+---
 # trade-check
 
 Evaluate a proposed dynasty trade using KTC values. Shows what you give vs get and a verdict.
