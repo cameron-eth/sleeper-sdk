@@ -39,11 +39,17 @@ Every layer is usable on its own. The CLI is the top-level fastest path; the Pyt
 
 ```bash
 cd python
-pip install -e .
+pip3 install .
 
 # Optional extras
-pip install 'sleeper-sdk[nfl-data]'   # for P/E ratio (real FFPG via nflreadpy)
+pip3 install 'sleeper-sdk[nfl-data]'   # for P/E ratio (real FFPG via nflreadpy)
 ```
+
+> **Reinstall after pulling.** The installed `sleeper` binary is a *copy*, so
+> source edits — and anything you pull — do not reach it until you run
+> `pip3 install .` again. A stale install fails in a confusing way: the
+> command simply is not in `--help`. To run straight from source without
+> installing, use `PYTHONPATH=src python3 -m sleeper.cli <command>`.
 
 ## 60-second tour
 
@@ -99,9 +105,10 @@ league = client.sync(client.leagues.get_league("1328460395249172480"))
 | `client.state` | `get_state` |
 | `client.projections` | `get_week`, `get_season`, `get_player_weeks`, `get_week_stats` |
 
-**Projections** come from `api.sleeper.com` — a different host from the rest of the read API, with no version prefix and no published contract, but it is what the Sleeper app itself renders. Three quirks the SDK handles for you:
+**Projections** come from `api.sleeper.com` — a different host from the rest of the read API, with no version prefix and no published contract, but it is what the Sleeper app itself renders. Four quirks the SDK handles for you:
 
-- `position` takes **one** value; repeating the param keeps only the last and `position=QB,RB` returns `[]`. Passing a list fans out one request per position and merges, deduped by `player_id`.
+- **Multiple positions need the bracket form `position[]`.** Repeating the plain param keeps only the *last* one and `position=QB,RB` returns `[]` — both fail silently. The bracket form unions them in a single request, so passing a list is one round trip, not one per position.
+- **`order_by` is accepted and ignored.** `ppr`, `pts_ppr` and `bogus` all return a byte-identical, *unsorted* body. It is sent for parity with the app's own request; sort client-side.
 - Omitting `position` returns the whole NFL — ~9.4k rows including long snappers. `get_week` defaults to the skill positions instead.
 - A bye week arrives as a row with `game_id: None` and **no `pts_ppr` key at all**, so `stats.get("pts_ppr", 0.0)` gets the right number by accident while losing the reason. Use `proj.is_bye` / `proj.has_projection`.
 
@@ -394,21 +401,37 @@ Requires the `nfl-data` extra.
 
 ## Claude skills
 
-Skills in `.claude/commands/` let an agent invoke the right CLI recipe for the right situation:
+29 skills in `.claude/commands/`, grouped into namespaces by subdirectory —
+`.claude/commands/trades/find.md` is invoked as `/trades:find`. Typing
+`/trades:` filters to the trade skills.
 
-| Skill | Intent it handles |
-|-------|---|
-| `gm-mode` | "What kind of team am I?" "Am I a contender?" |
-| `team-report` | Full roster + picks + trends combined |
-| `market-value` | "What's X actually trading for?" |
-| `buy-sell` | "Who should I buy low / sell high?" |
-| `trending` | "Who's moving this week?" |
-| `roster-rank` | "Where do I stack up?" |
-| `picks` | "What picks does each team own?" |
-| `league-values` | "How much is my roster worth?" |
-| `trade-check` | "Is this trade fair?" |
-| `trade-guru` | Multi-turn trade negotiation reasoning |
-| `start-sit` | "Should I start X or Y this week?" |
+| Namespace | Skills | Intent |
+|---|---|---|
+| `/roster:` | `lineup` `start-sit` `projections` `waivers` `values` `picks` `draft` | The team you control — "is my lineup right?", "who should I start?", "anyone worth adding?" |
+| `/trades:` | `find` `check` `guru` `partners` `suggest` `proposed` `inbox` | "Who can I get for X?", "is this trade fair?", "any offers?" |
+| `/market:` | `value` `buy-sell` `pe-ratio` `trending` `ktc-trend` | Player valuation, independent of any roster — "what's X actually trading for?", "who's overpriced?" |
+| `/league:` | `rank` `matchup` `status` | "Where do I stack up?", "who am I playing?" |
+| `/strategy:` | `gm-mode` `team-report` `data-scientist` | "What kind of team am I?", open-ended analysis |
+
+**Writes are user-invoked only.** `/roster:set-lineup`, `/roster:moves`,
+`/roster:slots` and `/trades:respond` mutate a real league, so they carry
+`disable-model-invocation: true` — an agent will not fire them on an inferred
+intent. Each previews the exact payload and waits for confirmation before
+executing. `/roster:draft` is also user-only: it polls a live draft in an
+unbounded loop.
+
+**Skills take the user and league as arguments.** None hardcodes a username,
+league name or league ID.
+
+**Codex mirror.** `.agents/skills/` is generated from `.claude/commands/` by
+`scripts/sync_skills.py`; never edit it by hand. CI fails if it is stale.
+
+Three things are gated in CI (`.github/workflows/skills.yml`): every skill has
+a description long enough to route on, the mirror is in sync, and no skill
+references a CLI command that does not exist. The description rule exists
+because the failure is silent — without one the harness falls back to the
+filename and the skill reaches the model as `gm-mode: gm-mode`, still loaded
+but invisible to routing.
 
 ---
 
@@ -418,63 +441,86 @@ Skills in `.claude/commands/` let an agent invoke the right CLI recipe for the r
 sleeper-sdk/
 ├── .claude/
 │   ├── STRUCTURE.md            # Skill ↔ CLI ↔ analytics map + hygiene rules
-│   └── commands/               # Claude skill files (all *.md)
+│   └── commands/               # 29 skills, namespaced by subdirectory
+│       ├── roster/             #   /roster:lineup, :start-sit, :moves, …
+│       ├── trades/             #   /trades:find, :check, :inbox, …
+│       ├── market/             #   /market:value, :buy-sell, …
+│       ├── league/             #   /league:rank, :matchup, :status
+│       └── strategy/           #   /strategy:gm-mode, :team-report, …
+├── .agents/skills/             # GENERATED Codex mirror — do not hand-edit
 ├── .github/workflows/
 │   ├── ktc-snapshot.yml        # Daily KTC value snapshots
-│   └── tests.yml               # pytest matrix on every PR to main
+│   ├── tests.yml               # pytest 3.11 + 3.12 on every PR to main
+│   ├── typecheck.yml           # mypy gate
+│   └── skills.yml              # Skill frontmatter + mirror-in-sync + CLI refs
 ├── scripts/
-│   └── protect_main.sh         # GitHub branch-protection helper
+│   ├── protect_main.sh         # GitHub branch-protection helper
+│   └── sync_skills.py          # Regenerates .agents/skills from .claude/commands
+├── data/ktc/                   # Committed daily KTC snapshots; latest.json
 ├── python/
 │   ├── examples/
-│   ├── tests/                  # 80 pytest unit tests, ~3.6s
+│   ├── scripts/                # draft_assist.py, snapshot_ktc.py
+│   ├── tests/                  # 357 pytest unit tests, ~10s, fully offline
 │   └── src/sleeper/
 │       ├── api/                # Layer 1: Sleeper REST wrappers
-│       ├── auth/               # GraphQL client (trades + private reads)
-│       ├── enrichment/         # Layer 2: KTC, marketplace, stats
+│       │   └── projections.py  #   second host (api.sleeper.com), no /v1
+│       ├── auth/               # GraphQL client — 12 mutations, private API
+│       ├── enrichment/         # Layer 2: KTC, marketplace, stats, projections
 │       │   ├── ktc.py
 │       │   ├── ktc_history.py
 │       │   ├── id_bridge.py
+│       │   ├── projections.py  #   re-score under a league's scoring_settings
 │       │   ├── rankings.py
 │       │   ├── stats.py
 │       │   └── values.py
 │       ├── analytics/          # Layer 3: rank, classify, score (pure logic)
-│       │   ├── value_adjustment.py    # Stud-side premium math (99% covered)
+│       │   ├── value_adjustment.py    # Stud-side premium math
 │       │   ├── chip_value.py          # Aging-QB discount curve
 │       │   ├── pick_value.py          # KTC pick (season, round) → value
-│       │   ├── find_trades_engine.py  # Package scoring (raw + adjusted overpay)
+│       │   ├── find_trades_engine.py  # Package scoring (legacy trade system)
+│       │   ├── base_value.py          # L0 ─┐
+│       │   ├── league_model.py        # L1  │ window-relative trade stack
+│       │   ├── pick_ownership.py      # L1  │ (tested; not yet CLI-wired)
+│       │   ├── contextual_value.py    # L2  │
+│       │   ├── trade_runtime.py       # L3 ─┘
+│       │   ├── start_sit.py           # Lineup decisions (pure; I/O in agent/)
+│       │   ├── partner_match.py       # Trade-partner compatibility
 │       │   ├── gm_mode.py
 │       │   ├── trade_suggestions.py
 │       │   ├── valuation.py           # P/E ratio
-│       │   ├── user_trades.py
+│       │   ├── user_collector.py
 │       │   ├── standings.py
 │       │   ├── dynasty.py
 │       │   ├── matchups.py
 │       │   ├── trades.py
 │       │   └── rosters.py
-│       ├── agent/              # Agent helpers (envelope, preview, build_context)
+│       ├── agent/              # envelope, preview (write safety), helpers
 │       ├── types/              # Pydantic models
 │       ├── cache/              # Player + KTC on-disk cache
 │       ├── http/               # Rate-limited httpx client
-│       ├── cli/                # Layer 4: command package (each file ≤ 600 LOC)
-│       │   ├── __init__.py     #   exports main
-│       │   ├── __main__.py     #   `python -m sleeper.cli` entry
+│       ├── cli/                # Layer 4: command package
 │       │   ├── _main.py        #   argparse setup + dispatch
 │       │   ├── _common.py      #   shared helpers (DRY)
 │       │   ├── values.py       #   market-value, league-values, roster-rank,
 │       │   │                   #   trending, buy-sell, pe-ratio, ktc-trend
 │       │   ├── trades.py       #   trade-check, suggest-trades, find-trades
+│       │   ├── projections.py  #   projections, start-sit
 │       │   ├── send_trade.py   #   send-trade (auth write)
 │       │   └── analysis.py     #   picks, gm-mode, proposed-trades
 │       ├── cli_agent.py        # Auth-required agent commands (inbox, lineup, …)
 │       ├── errors.py           # ErrorCode constants + structured exceptions
-│       └── client.py           # Main SleeperClient
+│       └── client.py           # Main SleeperClient — owns both HTTP hosts
 └── pyproject.toml
 ```
 
-**Hygiene rules** (enforced by convention; documented in `.claude/STRUCTURE.md`):
-- No file over **750 LOC** (current largest: `cli/values.py` at 586)
+**Hygiene rules** (documented in `.claude/STRUCTURE.md`; nothing enforces them
+automatically, so it is on the author to check):
+- No file over **750 LOC**. Two currently exceed it and are the standing
+  refactor targets: `agent/helpers.py` (773) and `cli_agent.py` (767).
 - Pure logic lives in `analytics/` and is unit-tested
 - CLI command handlers are thin wrappers that orchestrate analytics
+- Auth code is isolated in `auth/`; every write goes through the
+  preview/execute pattern in `agent/preview.py`
 - Skills are markdown-only; never Python in `.claude/commands/`
 
 ## Features at a glance
@@ -486,5 +532,6 @@ sleeper-sdk/
 - **SF/1QB auto-detect** — from league roster positions
 - **Fuzzy matching** — strips Jr./III, handles team changes
 - **Historical KTC** — daily snapshots via GitHub Action
-- **Agent-ready** — every CLI command has a corresponding Claude skill
-- **Zero config for reads** — no API key needed; token only for `send-trade`
+- **Agent-ready** — 37 of 38 CLI commands are reachable through a namespaced skill
+- **Safe writes** — every mutation previews its exact payload before firing
+- **Zero config for reads** — no API key needed; a token is needed only for writes and private reads
