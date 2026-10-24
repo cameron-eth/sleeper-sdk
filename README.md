@@ -4,6 +4,16 @@ A Python toolkit for Sleeper fantasy football. Look up leagues and rosters,
 compare player values from KeepTradeCut (KTC), find trades, and get lineup advice.
 Use it from the command line, Python, or a coding agent.
 
+## What you can do
+
+- View your leagues, rosters, matchups, and draft picks.
+- Compare player and pick values, and rank teams in your league.
+- Find trade partners, suggest trades, and check whether a deal is fair.
+- Spot rising, falling, or undervalued players.
+- Get start/sit advice using your league's scoring settings.
+- Assess whether your team should compete now or rebuild.
+- Review trade offers, set lineups, and make roster moves with a Sleeper token.
+
 ## Install
 
 Requires Python 3.9+.
