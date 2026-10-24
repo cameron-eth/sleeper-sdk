@@ -25,7 +25,7 @@ Run the CLI from source without reinstalling: `PYTHONPATH=src python -m sleeper.
 
 ## Architecture
 
-Four stacked layers, each usable alone (see `README.md` for the diagram): Sleeper API → enrichment (KTC values, NFL stats) → analytics → decision layer (CLI + skills).
+Four stacked layers, each usable alone (see `.claude/STRUCTURE.md` for details): Sleeper API → enrichment (KTC values, NFL stats) → analytics → decision layer (CLI + skills).
 
 `SleeperClient` is async-first and namespaced: `client.users`, `.leagues`, `.drafts`, `.players`, `.state`, `.projections`. Only `get_all_players()` hangs off the client directly. `client.sync()` exists for one-shot sync use.
 

@@ -1,79 +1,47 @@
 # sleeper-sdk
 
-> A Python toolkit for turning the [Sleeper Fantasy Football API](https://docs.sleeper.com) into a decision-making engine. Typed, async-first, KTC-enriched, and wired into a CLI that can actually propose trades.
-
----
-
-## The story
-
-Sleeper gives you the raw data — rosters, matchups, transactions, drafts. That's useful but not *actionable*. To know whether you should trade Kyler Murray for a 1st-round pick, you need three more things stacked on top:
-
-1. **A value system** — how much is each player / pick actually worth?
-2. **A production signal** — is that value backed by real points on the board?
-3. **A decision layer** — given my roster and the league, what should I do next?
-
-This SDK layers those three on top of Sleeper:
-
-```
-┌──────────────────────────────────────────────────────────┐
-│  Decision Layer — CLI commands & agent skills            │
-│  gm-mode · find-trades · suggest-trades · send-trade     │
-├──────────────────────────────────────────────────────────┤
-│  Analytics — rank, classify, match, score                │
-│  archetypes · P/E ratio · positional fit · value deltas  │
-├──────────────────────────────────────────────────────────┤
-│  Enrichment — external value sources                     │
-│  KTC dynasty values · marketplace (actual trade prices)  │
-│  · NFL stats (FFPG)                                      │
-├──────────────────────────────────────────────────────────┤
-│  Sleeper API — typed, async, rate-limited                │
-│  users · leagues · rosters · drafts · players · state    │
-└──────────────────────────────────────────────────────────┘
-```
-
-Every layer is usable on its own. The CLI is the top-level fastest path; the Python API is the flexibility path.
-
----
+A Python toolkit for Sleeper fantasy football. Look up leagues and rosters,
+compare player values from KeepTradeCut (KTC), find trades, and get lineup advice.
+Use it from the command line, Python, or a coding agent.
 
 ## Install
 
-```bash
-cd python
-pip3 install .
-
-# Optional extras
-pip3 install 'sleeper-sdk[nfl-data]'   # for P/E ratio (real FFPG via nflreadpy)
-```
-
-> **Reinstall after pulling.** The installed `sleeper` binary is a *copy*, so
-> source edits — and anything you pull — do not reach it until you run
-> `pip3 install .` again. A stale install fails in a confusing way: the
-> command simply is not in `--help`. To run straight from source without
-> installing, use `PYTHONPATH=src python3 -m sleeper.cli <command>`.
-
-## 60-second tour
+Requires Python 3.9+.
 
 ```bash
-# Who am I and what leagues am I in?
-python -m sleeper.cli league-values camfleety
-
-# Classify my team: contender, reloading, rebuilding, or pretender?
-python -m sleeper.cli gm-mode camfleety --league "Meat Market"
-
-# Find me realistic RB upgrades
-python -m sleeper.cli find-trades camfleety --league "Meat Market" --position RB --mode normal
-
-# Fire one of them (requires SLEEPER_TOKEN)
-SLEEPER_TOKEN='eyJ...' python -m sleeper.cli send-trade camfleety --league "Meat Market" --suggestion 1
+git clone https://github.com/cameron-eth/sleeper-sdk.git
+cd sleeper-sdk/python
+python3 -m venv .venv
+source .venv/bin/activate
+python3 -m pip install .
 ```
 
-That's the loop. The rest of this README is the map of how the layers underneath it work.
+After pulling updates, run `python3 -m pip install .` again from `python/`.
+For NFL stats and production-based analysis, install the optional extra:
+`python3 -m pip install '.[nfl-data]'`.
 
----
+## Try it
 
-## Layer 1 — Sleeper API
+Replace `YOUR_USERNAME` and `YOUR_LEAGUE` with your Sleeper details.
 
-The base layer. Everything else pulls from here.
+```bash
+# See your players' dynasty values
+sleeper league-values YOUR_USERNAME --league "YOUR_LEAGUE"
+
+# Get a team assessment and strategy
+sleeper gm-mode YOUR_USERNAME --league "YOUR_LEAGUE"
+
+# Find running back trades
+sleeper find-trades YOUR_USERNAME --league "YOUR_LEAGUE" --position RB
+```
+
+Run `sleeper --help` for all commands or `sleeper find-trades --help` for options.
+
+Public data and trade discovery need no API key. Private reads and actions such
+as sending trades or changing lineups require `SLEEPER_TOKEN`. Review the
+preview before confirming or executing an action; it changes your real team.
+
+## Use in Python
 
 ```python
 import asyncio
@@ -81,457 +49,28 @@ from sleeper import SleeperClient
 
 async def main():
     async with SleeperClient() as client:
-        user = await client.users.get_user("camfleety")
-        leagues = await client.users.get_user_leagues(user.user_id, season="2025")
-        for lg in leagues:
-            print(f"{lg.name} — {lg.total_rosters} teams")
+        user = await client.users.get_user("YOUR_USERNAME")
+        state = await client.state.get_state()
+        leagues = await client.users.get_user_leagues(
+            user.user_id, season=state.season
+        )
+        for league in leagues:
+            print(league.name)
 
 asyncio.run(main())
 ```
 
-Sync shortcut for scripts and notebooks:
+## Use with an agent
 
-```python
-client = SleeperClient()
-league = client.sync(client.leagues.get_league("1328460395249172480"))
-```
+Open this repo in Claude Code or Codex. Skills cover rosters, trades, player
+values, and team strategy. Give the agent your Sleeper username and league name.
 
-| Module | Methods |
-|--------|---------|
-| `client.users` | `get_user`, `get_user_leagues`, `get_user_drafts` |
-| `client.leagues` | `get_league`, `get_leagues_for_user`, `get_rosters`, `get_users`, `get_matchups`, `get_winners_bracket`, `get_losers_bracket`, `get_transactions`, `get_traded_picks` |
-| `client.drafts` | `get_draft`, `get_drafts_for_user`, `get_drafts_for_league`, `get_picks`, `get_traded_picks` |
-| `client.players` | `get_all_players` (cached), `get_trending` |
-| `client.state` | `get_state` |
-| `client.projections` | `get_week`, `get_season`, `get_player_weeks`, `get_week_stats` |
+- [Claude skills](.claude/commands/) — for example, `/trades:find` or `/strategy:gm-mode`.
+- [Codex skills](.agents/skills/) — generated from the Claude skills.
+- [Contributor and agent guidance](CLAUDE.md) — read before changing code.
 
-**Projections** come from `api.sleeper.com` — a different host from the rest of the read API, with no version prefix and no published contract, but it is what the Sleeper app itself renders. Four quirks the SDK handles for you:
+## More detail
 
-- **Multiple positions need the bracket form `position[]`.** Repeating the plain param keeps only the *last* one and `position=QB,RB` returns `[]` — both fail silently. The bracket form unions them in a single request, so passing a list is one round trip, not one per position.
-- **`order_by` is accepted and ignored.** `ppr`, `pts_ppr` and `bogus` all return a byte-identical, *unsorted* body. It is sent for parity with the app's own request; sort client-side.
-- Omitting `position` returns the whole NFL — ~9.4k rows including long snappers. `get_week` defaults to the skill positions instead.
-- A bye week arrives as a row with `game_id: None` and **no `pts_ppr` key at all**, so `stats.get("pts_ppr", 0.0)` gets the right number by accident while losing the reason. Use `proj.is_bye` / `proj.has_projection`.
-
-**Built-ins:** token-bucket rate limiting (under Sleeper's 1000 req/min cap), exponential-backoff retries on 5xx, 24h player cache to memory + disk, Pydantic types on every response.
-
-**Authenticated reads + trade writes** live in `sleeper.auth.SleeperAuthClient` — these hit Sleeper's GraphQL endpoint (which requires a bearer token) for things like reading your own trade inbox or calling `propose_trade`. Token comes from the `SLEEPER_TOKEN` env var.
-
----
-
-## Layer 2 — Enrichment
-
-External value sources, fused onto Sleeper player IDs.
-
-### KTC Dynasty Values
-
-Scrapes [KeepTradeCut](https://keeptradecut.com) and fuzzy-matches to Sleeper IDs. Both Superflex and 1QB formats.
-
-```python
-from sleeper.enrichment.ktc import fetch_ktc_players, build_ktc_to_sleeper_map, detect_scoring_type
-
-ktc = fetch_ktc_players()                    # 24h cache to disk
-mapping = build_ktc_to_sleeper_map(ktc, sleeper_players)
-scoring = detect_scoring_type(league)        # "sf" or "1qb"
-```
-
-**Cache:** `$TMPDIR/sleeper_sdk_cache/ktc_values.json`, 24h TTL. A daily GitHub Action (see `.github/workflows/`) snapshots values so `ktc-trend` can plot historical movement.
-
-#### KTC Value Adjustment (important!)
-
-KTC itself publishes a **Value Adjustment** — extra KTC added to the side giving up more "roster spots" or "stud factor" in a lopsided trade. The idea, in their words: *12 third-round picks should not be a fair deal for DeAndre Hopkins.* The adjustment is reverse-engineered from the filler players needed to even out the trade.
-
-This SDK doesn't replicate KTC's exact adjustment formula (it's proprietary and reverse-engineered from their UI), but it applies the same *principle* in `find-trades` and `suggest-trades`:
-
-- **Asset concentration weighting** — a trade that sends 1 stud for 3 mid-tier players incurs a penalty proportional to the roster-spot differential.
-- **Stud-factor tilting** — a top-10-positional player counts more than raw KTC would suggest.
-
-When you see `--max-overpay 1500` in the CLI, that's your manual value-adjustment budget: how much extra KTC you're willing to pay for the privilege of consolidating onto the stud. Default `normal` mode caps overpay at 3500, which roughly mirrors KTC's own adjustment ceiling.
-
-### Marketplace Values
-
-KTC tells you *theory*. The marketplace module tells you what players *actually* trade for, built from real transactions.
-
-```python
-from sleeper.enrichment.marketplace import build_marketplace_values, compare_ktc_vs_actual
-
-marketplace = build_marketplace_values(trade_observations, ktc_values)
-comparisons = compare_ktc_vs_actual(marketplace)
-# signal = "BUY" (cheaper than KTC), "SELL" (pricier), or "FAIR"
-```
-
-For N-for-N trades each player's cost is **isolated** via subtraction — `cost = other_side_total - sum(companions)` — rather than proportional attribution, so the engine doesn't assume KTC ratios are correct. This is the mechanism that lets the `market-value` CLI flag arbitrage.
-
-### NFL Stats — the production signal
-
-Real FFPG via [`nflreadpy`](https://github.com/nflverse/nflreadpy). Joined to KTC via Sleeper IDs. This is what powers P/E ratio and GM Mode's production rank.
-
-```python
-from sleeper.enrichment.stats import get_season_stats
-stats = get_season_stats([2025])
-```
-
----
-
-## Layer 3 — Analytics
-
-Ranking, classifying, and scoring.
-
-### P/E Ratio — finding undervalued players
-
-Borrowing from equities: **Price** = KTC value, **Earnings** = fantasy points per game. Normalized against the positional median so QB/RB/WR/TE are comparable.
-
-```
-price_multiple    = ktc_value / positional_median_ktc
-earnings_multiple = ffpg      / positional_median_ffpg
-pe_ratio          = price_multiple / earnings_multiple
-```
-
-| P/E | Meaning |
-|------|---------|
-| `< 0.7` | **Undervalued** — production exceeds price (buy) |
-| `~ 1.0` | Fair |
-| `> 1.5` | **Overvalued** — paying for hype (sell) |
-| `None`  | Speculative — no production sample yet |
-
-### GM Mode — team archetype classification
-
-One function that answers *what kind of team am I?* and *what should I do about it?*
-
-```python
-from sleeper.analytics.gm_mode import generate_gm_report
-report = generate_gm_report(my_roster, all_rosters, sleeper_players, sleeper_to_ktc, ...)
-print(report.archetype.name)  # CONTENDER / RELOADING / REBUILDING / PRETENDER
-```
-
-Archetype is computed from:
-- **Value rank** (total KTC including picks) vs the league
-- **Production rank** (season FPTS) vs the league
-- **Roster age** (avg starter age)
-- **Youth-weighted value** (% of KTC tied up in players under 26)
-
-The PRETENDER detector is the most distinctive check: mid-value teams (rank 3-6) that are *underperforming their value* (production rank 6-9) AND skewing old → usually the classic dynasty dead-zone trap.
-
-### Start/Sit — this week's lineup decision
-
-KTC answers "who is worth more." This answers "who do I start on Sunday."
-
-```python
-from sleeper import SleeperClient
-from sleeper.analytics.start_sit import compare_projections
-
-client = SleeperClient()
-
-async def ask():
-    async with SleeperClient() as c:
-        league = await c.leagues.get_league("1328460395249172480")
-        projections = await c.projections.get_week(league.season, 1, position=["QB"])
-        mine = [p for p in projections if p.player_id in ("5870", "4017")]
-        return compare_projections(mine, league.scoring_settings)
-
-verdict = client.sync(ask())
-print(verdict.recommendation)
-# Start Daniel Jones over Deshaun Watson (lean, +2.2).
-```
-
-Three things it gets right that reading `pts_ppr` off the feed does not:
-
-**1. Your league's scoring, not generic PPR.** The projection `stats` keys and a league's `scoring_settings` keys are the same vocabulary (`pass_yd`, `rec`, `bonus_rec_te`, `pts_allow_21_27`), so league points are a dot product over the keys they share. A 6-point passing TD or TE premium moves a QB or TE several points — often more than the margin the decision turns on.
-
-**2. Availability outranks the projection.** Sleeper still serves a projection for a player who was ruled out on Friday, and ranking on points alone will happily start him. Candidates sort on `(availability_rank, -points)`, so a bye or `Out` player can never be slotted ahead of someone who can play — and the verdict says *why* rather than reporting a bare `0.0`.
-
-**3. A coin-flip is called a coin-flip.** Weekly projections carry several points of error, so confidence is a continuous function of the margin — `margin / (margin + 3.0)` — banded into `coin-flip` / `lean` / `clear`. No decision hinges on landing either side of a threshold.
-
-| Function | What it does |
-|----------|-------------|
-| `analytics.start_sit.compare_projections` | Rank candidates, fill N slots, return a verdict with reasons |
-| `analytics.start_sit.confidence_score` | Continuous 0–1 confidence from a point margin |
-| `enrichment.projections.score_projection` | League points for one projection, with the per-stat breakdown |
-| `enrichment.projections.rank_projections` | Sort a position sweep by league points, filtering filler rows |
-| `agent.helpers.start_sit` | One call, by player name — resolves roster → league → all NFL |
-| `agent.helpers.lineup_with_projections` | `optimal_lineup` with projections fetched and league-scored |
-
-### Single-league analytics
-
-| Module | What it does |
-|--------|-------------|
-| `analytics.standings` | Standings, power rankings, median record, weekly points |
-| `analytics.dynasty` | Initial draft map, trade volume, future pick ownership |
-| `analytics.matchups` | H2H records, closest games, highest-scoring weeks |
-| `analytics.trades` | Transaction summaries, most-traded players, waiver activity |
-| `analytics.rosters` | Composition, player-to-team map |
-| `analytics.valuation` | P/E ratio |
-| `analytics.gm_mode` | Archetype classification |
-| `analytics.trade_suggestions` | Positional surplus ↔ need matching for 1-for-1 swaps |
-
-### Cross-league user trade evaluation
-
-For users in multiple leagues, `analytics.user_collector` + `analytics.user_trades` aggregate every trade you've made, score it against marketplace values, and surface your best / worst deals + net value + win rate.
-
-```python
-from sleeper.analytics.user_collector import collect_user_league_snapshots, extract_trades_only
-from sleeper.analytics.user_trades import evaluate_user_trades, build_user_trade_report
-
-snapshots = await collect_user_league_snapshots(client, user_id, seasons=["2024", "2025"])
-trades = extract_trades_only(snapshots, user_id)
-report = build_user_trade_report(evaluate_user_trades(trades, marketplace, ktc))
-print(f"Win rate: {report.win_rate:.0%}  Net: {report.net_value:+.0f}")
-```
-
----
-
-## Layer 4 — CLI & the decision loop
-
-The CLI is where the whole stack comes together. Installed as the `sleeper` entry point (or `python -m sleeper.cli`).
-
-### The full loop
-
-```
-gm-mode          →  What kind of team am I? What should I focus on?
-   │
-   ▼
-find-trades      →  Given my weakness + strategy, what trades make sense?
-   │  OR
-   ▼
-suggest-trades   →  Auto-match my surplus to the league's needs
-   │
-   ▼
-send-trade       →  Preview + fire the proposal via Sleeper GraphQL
-```
-
-### Command reference
-
-| Command | Purpose |
-|---------|---------|
-| `gm-mode <user>` | Archetype report: CONTENDER / RELOADING / REBUILDING / PRETENDER + strategy |
-| `find-trades <user>` | Flexible trade search with position / include / exclude / mode filters |
-| `suggest-trades <user>` | Auto-suggest 1-for-1 swaps matching positional surplus ↔ need |
-| `proposed-trades <user>` | League-wide trade history with KTC verdicts (auth — needs `SLEEPER_TOKEN`) |
-| `send-trade <user>` | Propose a trade via Sleeper GraphQL (preview + confirm) |
-| `league-values <user>` | KTC values for every player on a roster |
-| `roster-rank <user>` | Rank all teams in a league by total KTC value |
-| `picks <user>` | Future pick assets with KTC values |
-| `market-value "Name"` | KTC listed value vs median actual trade price |
-| `trade-check` | Evaluate a hypothetical trade (`--give ... --get ...`) |
-| `trending` | Biggest 7-day KTC movers |
-| `buy-sell buy\|sell` | Players trading below / above their KTC value |
-| `ktc-trend <player>` | Historical KTC from daily snapshots |
-| `pe-ratio` | Price-to-Earnings scan — find undervalued players |
-| `start-sit <user>` | "Start X or Y?" — league-scored projections, bye/injury aware, with confidence |
-| `projections` | Weekly projection board, optionally scored by your league's settings |
-| Agent commands | `whoami`, `inbox`, `outbox`, `lineup`, `lineup-health`, `roster`, `matchup`, `waivers`, `trade-respond`, `lineup-set`, `waiver-claim`, `drop`, `add`, `taxi-move`, `ir-move`, `activate`, `execute`, `preview-show` (auth required) |
-
-### `gm-mode` — archetype + strategy
-
-```bash
-python -m sleeper.cli gm-mode camfleety --league "Meat Market" --format sf
-
-# Scout another owner
-python -m sleeper.cli gm-mode camfleety --league "Meat Market" --owner someone_else
-```
-
-Output: archetype + confidence, value rank vs production rank, positional breakdown (STRONG/AVG/WEAK × DEEP/AVG/SHALLOW), top 5 assets, aging liabilities, archetype-matched buy/sell targets.
-
-### `find-trades` — flexible trade finder
-
-```bash
-# Realistic RB upgrades (mode=normal is balanced overpay)
-python -m sleeper.cli find-trades camfleety --league "Meat Market" \
-    --position RB --mode normal --min-ktc 4000
-
-# Target specific players, exclude your own
-python -m sleeper.cli find-trades camfleety --league "Meat Market" \
-    --position WR --include "Puka Nacua" "Garrett Wilson" \
-    --exclude "Emeka Egbuka"
-
-# Liquidate a surplus QB for a tier down + picks
-python -m sleeper.cli find-trades camfleety --league "Meat Market" \
-    --mode downtiering --position QB
-```
-
-| Flag | Default | Purpose |
-|------|---------|---------|
-| `--position` | all | `QB RB WR TE` (space-separated) |
-| `--include` / `--exclude` | none | Target whitelist / blacklist |
-| `--mode` | `normal` | `normal` (overpay +300 to +3500) / `upgrade` (-5000 to 0) / `downtiering` (+500 to +5000) |
-| `--min-overpay` / `--max-overpay` | mode-dependent | Manual KTC value-adjustment budget |
-| `--min-ktc` | 0 | Filter targets by min KTC |
-| `--top` | 15 | Row limit |
-| `--single-only` | false | Disable multi-asset packaging |
-
-The three modes correspond to three strategic postures:
-- **normal** — balanced: you pay a small premium to consolidate. Matches KTC's own value-adjustment ceiling.
-- **upgrade** — you want the better player and will absorb the value loss (tank the KTC delta, win on talent).
-- **downtiering** — you're liquidating: trade a stud for a tier-down player + picks.
-
-### `suggest-trades` → `send-trade`
-
-`suggest-trades` automates the partner-finding step by matching *your* positional surplus against *another team's* need (and vice versa), bounded by KTC value parity. Suggestions are numbered and cached to `~/.sleeper-sdk/last_suggestions.json` keyed by user + league.
-
-```bash
-# 1. Find good trades
-python -m sleeper.cli suggest-trades camfleety --league "Meat Market" --top 10
-
-# 2. Broaden tolerance if nothing matches
-python -m sleeper.cli suggest-trades camfleety --league "Meat Market" --tolerance 15 --position WR
-
-# 3. Preview + fire suggestion #2
-SLEEPER_TOKEN='eyJ...' python -m sleeper.cli send-trade camfleety --league "Meat Market" --suggestion 2
-
-# Or send explicitly
-python -m sleeper.cli send-trade camfleety --league "Meat Market" \
-    --to-roster 8 --send "Will Levis" --get "Jerome Ford"
-```
-
-`send-trade` **always** prints a preview table and requires interactive `y` confirmation unless `--yes` is passed (for scripted agent workflows — preview still prints). `SLEEPER_TOKEN` is read from the env var only; never logged, never stored.
-
-Capture the token once from sleeper.com → DevTools → Network → any `graphql` request → `authorization` header.
-
-### `pe-ratio` — undervalued player scan
-
-```bash
-python -m sleeper.cli pe-ratio \
-    --format sf --seasons 2025 --position WR \
-    --max-age 27 --min-ppg 8 --min-ktc 2500 \
-    --exclude-speculative --top 20 --sort pe
-```
-
-Requires the `nfl-data` extra.
-
----
-
-## Claude skills
-
-29 skills in `.claude/commands/`, grouped into namespaces by subdirectory —
-`.claude/commands/trades/find.md` is invoked as `/trades:find`. Typing
-`/trades:` filters to the trade skills.
-
-| Namespace | Skills | Intent |
-|---|---|---|
-| `/roster:` | `lineup` `start-sit` `projections` `waivers` `values` `picks` `draft` | The team you control — "is my lineup right?", "who should I start?", "anyone worth adding?" |
-| `/trades:` | `find` `check` `guru` `partners` `suggest` `proposed` `inbox` | "Who can I get for X?", "is this trade fair?", "any offers?" |
-| `/market:` | `value` `buy-sell` `pe-ratio` `trending` `ktc-trend` | Player valuation, independent of any roster — "what's X actually trading for?", "who's overpriced?" |
-| `/league:` | `rank` `matchup` `status` | "Where do I stack up?", "who am I playing?" |
-| `/strategy:` | `gm-mode` `team-report` `data-scientist` | "What kind of team am I?", open-ended analysis |
-
-**Writes are user-invoked only.** `/roster:set-lineup`, `/roster:moves`,
-`/roster:slots` and `/trades:respond` mutate a real league, so they carry
-`disable-model-invocation: true` — an agent will not fire them on an inferred
-intent. Each previews the exact payload and waits for confirmation before
-executing. `/roster:draft` is also user-only: it polls a live draft in an
-unbounded loop.
-
-**Skills take the user and league as arguments.** None hardcodes a username,
-league name or league ID.
-
-**Codex mirror.** `.agents/skills/` is generated from `.claude/commands/` by
-`scripts/sync_skills.py`; never edit it by hand. CI fails if it is stale.
-
-Three things are gated in CI (`.github/workflows/skills.yml`): every skill has
-a description long enough to route on, the mirror is in sync, and no skill
-references a CLI command that does not exist. The description rule exists
-because the failure is silent — without one the harness falls back to the
-filename and the skill reaches the model as `gm-mode: gm-mode`, still loaded
-but invisible to routing.
-
----
-
-## Project structure
-
-```
-sleeper-sdk/
-├── .claude/
-│   ├── STRUCTURE.md            # Skill ↔ CLI ↔ analytics map + hygiene rules
-│   └── commands/               # 29 skills, namespaced by subdirectory
-│       ├── roster/             #   /roster:lineup, :start-sit, :moves, …
-│       ├── trades/             #   /trades:find, :check, :inbox, …
-│       ├── market/             #   /market:value, :buy-sell, …
-│       ├── league/             #   /league:rank, :matchup, :status
-│       └── strategy/           #   /strategy:gm-mode, :team-report, …
-├── .agents/skills/             # GENERATED Codex mirror — do not hand-edit
-├── .github/workflows/
-│   ├── ktc-snapshot.yml        # Daily KTC value snapshots
-│   ├── tests.yml               # pytest 3.11 + 3.12 on every PR to main
-│   ├── typecheck.yml           # mypy gate
-│   └── skills.yml              # Skill frontmatter + mirror-in-sync + CLI refs
-├── scripts/
-│   ├── protect_main.sh         # GitHub branch-protection helper
-│   └── sync_skills.py          # Regenerates .agents/skills from .claude/commands
-├── data/ktc/                   # Committed daily KTC snapshots; latest.json
-├── python/
-│   ├── examples/
-│   ├── scripts/                # draft_assist.py, snapshot_ktc.py
-│   ├── tests/                  # 357 pytest unit tests, ~10s, fully offline
-│   └── src/sleeper/
-│       ├── api/                # Layer 1: Sleeper REST wrappers
-│       │   └── projections.py  #   second host (api.sleeper.com), no /v1
-│       ├── auth/               # GraphQL client — 12 mutations, private API
-│       ├── enrichment/         # Layer 2: KTC, marketplace, stats, projections
-│       │   ├── ktc.py
-│       │   ├── ktc_history.py
-│       │   ├── id_bridge.py
-│       │   ├── projections.py  #   re-score under a league's scoring_settings
-│       │   ├── rankings.py
-│       │   ├── stats.py
-│       │   └── values.py
-│       ├── analytics/          # Layer 3: rank, classify, score (pure logic)
-│       │   ├── value_adjustment.py    # Stud-side premium math
-│       │   ├── chip_value.py          # Aging-QB discount curve
-│       │   ├── pick_value.py          # KTC pick (season, round) → value
-│       │   ├── find_trades_engine.py  # Package scoring (legacy trade system)
-│       │   ├── base_value.py          # L0 ─┐
-│       │   ├── league_model.py        # L1  │ window-relative trade stack
-│       │   ├── pick_ownership.py      # L1  │ (tested; not yet CLI-wired)
-│       │   ├── contextual_value.py    # L2  │
-│       │   ├── trade_runtime.py       # L3 ─┘
-│       │   ├── start_sit.py           # Lineup decisions (pure; I/O in agent/)
-│       │   ├── partner_match.py       # Trade-partner compatibility
-│       │   ├── gm_mode.py
-│       │   ├── trade_suggestions.py
-│       │   ├── valuation.py           # P/E ratio
-│       │   ├── user_collector.py
-│       │   ├── standings.py
-│       │   ├── dynasty.py
-│       │   ├── matchups.py
-│       │   ├── trades.py
-│       │   └── rosters.py
-│       ├── agent/              # envelope, preview (write safety), helpers
-│       ├── types/              # Pydantic models
-│       ├── cache/              # Player + KTC on-disk cache
-│       ├── http/               # Rate-limited httpx client
-│       ├── cli/                # Layer 4: command package
-│       │   ├── _main.py        #   argparse setup + dispatch
-│       │   ├── _common.py      #   shared helpers (DRY)
-│       │   ├── values.py       #   market-value, league-values, roster-rank,
-│       │   │                   #   trending, buy-sell, pe-ratio, ktc-trend
-│       │   ├── trades.py       #   trade-check, suggest-trades, find-trades
-│       │   ├── projections.py  #   projections, start-sit
-│       │   ├── send_trade.py   #   send-trade (auth write)
-│       │   └── analysis.py     #   picks, gm-mode, proposed-trades
-│       ├── cli_agent.py        # Auth-required agent commands (inbox, lineup, …)
-│       ├── errors.py           # ErrorCode constants + structured exceptions
-│       └── client.py           # Main SleeperClient — owns both HTTP hosts
-└── pyproject.toml
-```
-
-**Hygiene rules** (documented in `.claude/STRUCTURE.md`; nothing enforces them
-automatically, so it is on the author to check):
-- No file over **750 LOC**. Two currently exceed it and are the standing
-  refactor targets: `agent/helpers.py` (773) and `cli_agent.py` (767).
-- Pure logic lives in `analytics/` and is unit-tested
-- CLI command handlers are thin wrappers that orchestrate analytics
-- Auth code is isolated in `auth/`; every write goes through the
-  preview/execute pattern in `agent/preview.py`
-- Skills are markdown-only; never Python in `.claude/commands/`
-
-## Features at a glance
-
-- **Async-first** — `httpx.AsyncClient` with `sync()` helper
-- **Fully typed** — Pydantic models everywhere
-- **Rate limited** — token bucket under Sleeper's 1000 req/min
-- **Player + KTC caching** — disk cache, 24h TTL
-- **SF/1QB auto-detect** — from league roster positions
-- **Fuzzy matching** — strips Jr./III, handles team changes
-- **Historical KTC** — daily snapshots via GitHub Action
-- **Agent-ready** — 37 of 38 CLI commands are reachable through a namespaced skill
-- **Safe writes** — every mutation previews its exact payload before firing
-- **Zero config for reads** — no API key needed; a token is needed only for writes and private reads
+- [SDK reference](SDK_REFERENCE.md) — API methods, analytics, and CLI options.
+- [Examples](python/examples/) — Python usage.
+- [Architecture](.claude/STRUCTURE.md) — how the code and skills fit together.
