@@ -30,6 +30,25 @@ def test_waiver_claim_uses_submit_waiver_claim_with_bid():
     assert variables["k_settings"] == ["waiver_bid"] and variables["v_settings"] == [12]
 
 
+def test_cancel_waiver_claim_inlines_validated_ids():
+    client, calls = _client_recording_calls()
+    client.cancel_waiver_claim("123", "456", 8)
+    op, query, variables = calls[0]
+    assert op == "cancel_waiver_claim"
+    assert 'league_id: "123"' in query and 'transaction_id: "456"' in query and "leg: 8" in query
+    assert variables == {}
+
+
+def test_cancel_waiver_claim_rejects_non_numeric_ids():
+    client, _ = _client_recording_calls()
+    for bad_league, bad_txn in (('1" } mutation x {', "456"), ("123", "4 5")):
+        try:
+            client.cancel_waiver_claim(bad_league, bad_txn, 8)
+        except ValueError:
+            continue
+        raise AssertionError("expected ValueError for non-numeric id")
+
+
 def test_free_agent_add_uses_league_create_transaction():
     client, calls = _client_recording_calls()
     client.add_drop("123", 3, add_player_id="13346")

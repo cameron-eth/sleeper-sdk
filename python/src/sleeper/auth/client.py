@@ -515,18 +515,23 @@ class SleeperAuthClient:
         return data.get("submit_waiver_claim") or {}
 
     def cancel_waiver_claim(self, league_id: str, transaction_id: str, leg: int) -> dict:
-        query = """
-        mutation cancel_waiver_claim($league_id: Snowflake!, $transaction_id: Snowflake!, $leg: Int!) {
-          cancel_waiver_claim(league_id: $league_id, transaction_id: $transaction_id, leg: $leg) {
-            transaction_id status type created
-          }
-        }
+        """Cancel a pending waiver claim.
+
+        The web client inlines ``league_id`` / ``leg`` / ``transaction_id`` (no
+        typed variables), so ids are validated before interpolation.
         """
-        data = self.gql("cancel_waiver_claim", query, {
-            "league_id": league_id,
-            "transaction_id": transaction_id,
-            "leg": leg,
-        })
+        query = f"""
+        mutation cancel_waiver_claim {{
+          cancel_waiver_claim(
+            league_id: "{_snowflake(league_id)}",
+            leg: {int(leg)},
+            transaction_id: "{_snowflake(transaction_id)}"
+          ) {{
+            transaction_id type status leg adds drops roster_ids settings
+          }}
+        }}
+        """
+        data = self.gql("cancel_waiver_claim", query, {})
         return data.get("cancel_waiver_claim") or {}
 
     def move_to_taxi(self, league_id: str, roster_id: int, player_id: str) -> dict:
