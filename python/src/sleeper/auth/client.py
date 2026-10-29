@@ -71,6 +71,14 @@ def _snowflake(value: str | int) -> str:
     return s
 
 
+def _txn_args(adds: dict, drops: dict) -> dict:
+    """Sleeper's web client sends adds/drops as parallel key/value arrays."""
+    return {
+        "k_adds": list(adds), "v_adds": list(adds.values()),
+        "k_drops": list(drops), "v_drops": list(drops.values()),
+    }
+
+
 def _player_ids(ids: list[str]) -> list[str]:
     """Reject player ids that are not alphanumeric (digits or DEF codes like DEN)."""
     out: list[str] = []
@@ -446,25 +454,24 @@ class SleeperAuthClient:
         adds: dict = {add_player_id: roster_id} if add_player_id else {}
         drops: dict = {drop_player_id: roster_id} if drop_player_id else {}
         query = """
-        mutation create_free_agent(
-          $league_id: Snowflake!, $roster_id: Int!,
-          $adds: JSON, $drops: JSON
+        mutation league_create_transaction(
+          $leagueId: String!  $type: String!
+          $k_adds: [String]  $v_adds: [Int]  $k_drops: [String]  $v_drops: [Int]
         ) {
-          create_free_agent(
-            league_id: $league_id, roster_id: $roster_id,
-            adds: $adds, drops: $drops
+          league_create_transaction(
+            league_id: $leagueId, type: $type,
+            k_adds: $k_adds, v_adds: $v_adds, k_drops: $k_drops, v_drops: $v_drops
           ) {
-            transaction_id status type created adds drops
+            transaction_id type status leg adds drops roster_ids
           }
         }
         """
-        data = self.gql("create_free_agent", query, {
-            "league_id": league_id,
-            "roster_id": roster_id,
-            "adds": adds,
-            "drops": drops,
+        data = self.gql("league_create_transaction", query, {
+            "leagueId": str(league_id),
+            "type": "free_agent",
+            **_txn_args(adds, drops),
         })
-        return data.get("create_free_agent") or {}
+        return data.get("league_create_transaction") or {}
 
     def submit_waiver_claim(
         self,
@@ -475,45 +482,56 @@ class SleeperAuthClient:
         drop_player_id: str | None = None,
         faab_bid: int = 0,
     ) -> dict:
-        """Submit a waiver claim. FAAB bid in dollars (0 if league uses
-        priority instead of FAAB)."""
+        """Submit a waiver claim via ``submit_waiver_claim``. FAAB bid in
+        dollars (0 if league uses priority instead of FAAB).
+
+        Sleeper's web client sends adds/drops/settings as parallel key/value
+        arrays. The bid is sent as ``settings.waiver_bid`` (the same key
+        transactions carry in the public REST API).
+        """
         adds = {add_player_id: roster_id}
         drops: dict = {drop_player_id: roster_id} if drop_player_id else {}
         query = """
-        mutation create_waiver_claim(
-          $league_id: Snowflake!, $roster_id: Int!,
-          $adds: JSON, $drops: JSON, $waiver_budget: Int
+        mutation submit_waiver_claim(
+          $leagueId: String!
+          $k_adds: [String] $v_adds: [Int] $k_drops: [String] $v_drops: [Int]
+          $k_settings: [String] $v_settings: [Int]
         ) {
-          create_waiver_claim(
-            league_id: $league_id, roster_id: $roster_id,
-            adds: $adds, drops: $drops, waiver_budget: $waiver_budget
+          submit_waiver_claim(
+            league_id: $leagueId, k_adds: $k_adds, v_adds: $v_adds,
+            k_drops: $k_drops, v_drops: $v_drops,
+            k_settings: $k_settings, v_settings: $v_settings
           ) {
-            transaction_id status type created adds drops settings
+            transaction_id type status leg adds drops roster_ids
           }
         }
         """
-        data = self.gql("create_waiver_claim", query, {
-            "league_id": league_id,
-            "roster_id": roster_id,
-            "adds": adds,
-            "drops": drops,
-            "waiver_budget": int(faab_bid),
+        data = self.gql("submit_waiver_claim", query, {
+            "leagueId": str(league_id),
+            **_txn_args(adds, drops),
+            "k_settings": ["waiver_bid"],
+            "v_settings": [int(faab_bid)],
         })
-        return data.get("create_waiver_claim") or {}
+        return data.get("submit_waiver_claim") or {}
 
     def cancel_waiver_claim(self, league_id: str, transaction_id: str, leg: int) -> dict:
-        query = """
-        mutation cancel_waiver_claim($league_id: Snowflake!, $transaction_id: Snowflake!, $leg: Int!) {
-          cancel_waiver_claim(league_id: $league_id, transaction_id: $transaction_id, leg: $leg) {
-            transaction_id status type created
-          }
-        }
+        """Cancel a pending waiver claim.
+
+        The web client inlines ``league_id`` / ``leg`` / ``transaction_id`` (no
+        typed variables), so ids are validated before interpolation.
         """
-        data = self.gql("cancel_waiver_claim", query, {
-            "league_id": league_id,
-            "transaction_id": transaction_id,
-            "leg": leg,
-        })
+        query = f"""
+        mutation cancel_waiver_claim {{
+          cancel_waiver_claim(
+            league_id: "{_snowflake(league_id)}",
+            leg: {int(leg)},
+            transaction_id: "{_snowflake(transaction_id)}"
+          ) {{
+            transaction_id type status leg adds drops roster_ids settings
+          }}
+        }}
+        """
+        data = self.gql("cancel_waiver_claim", query, {})
         return data.get("cancel_waiver_claim") or {}
 
     def move_to_taxi(self, league_id: str, roster_id: int, player_id: str) -> dict:
