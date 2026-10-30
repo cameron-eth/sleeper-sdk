@@ -71,11 +71,6 @@ def _snowflake(value: str | int) -> str:
     return s
 
 
-def _gql_list(values: list[str]) -> str:
-    """Render a list of player ids as the inline GraphQL literal the web client sends."""
-    return json.dumps(_player_ids(values))
-
-
 def _player_ids(ids: list[str]) -> list[str]:
     """Reject player ids that are not alphanumeric (digits or DEF codes like DEN)."""
     out: list[str] = []
@@ -85,6 +80,11 @@ def _player_ids(ids: list[str]) -> list[str]:
             raise ValueError(f"invalid player_id: {pid!r}")
         out.append(s)
     return out
+
+
+def _gql_list(values: list[str]) -> str:
+    """Render a list of player ids as the inline GraphQL literal the web client sends."""
+    return json.dumps(_player_ids(values))
 
 
 def inspect_token(jwt: str) -> TokenInfo:
