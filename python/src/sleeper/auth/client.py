@@ -82,6 +82,11 @@ def _player_ids(ids: list[str]) -> list[str]:
     return out
 
 
+def _gql_list(values: list[str]) -> str:
+    """Render a list of player ids as the inline GraphQL literal the web client sends."""
+    return json.dumps(_player_ids(values))
+
+
 def inspect_token(jwt: str) -> TokenInfo:
     """Parse (but do not verify) a Sleeper JWT to see who it belongs to and when it expires."""
     payload = _decode_jwt_payload(jwt)
@@ -302,50 +307,46 @@ class SleeperAuthClient:
         return data.get("propose_trade") or {}
 
     def accept_trade(self, league_id: str, transaction_id: str, leg: int) -> dict:
-        query = """
-        mutation accept_trade($league_id: Snowflake!, $transaction_id: Snowflake!, $leg: Int!) {
-          accept_trade(league_id: $league_id, transaction_id: $transaction_id, leg: $leg) {
-            transaction_id status type created
-          }
-        }
+        """Accept a proposed trade (web-client inlined arguments)."""
+        query = f"""
+        mutation accept_trade {{
+          accept_trade(
+            league_id: "{_snowflake(league_id)}",
+            transaction_id: "{_snowflake(transaction_id)}",
+            leg: {int(leg)}
+          ) {{
+            transaction_id type status leg adds drops roster_ids consenter_ids settings
+          }}
+        }}
         """
-        data = self.gql("accept_trade", query, {
-            "league_id": league_id,
-            "transaction_id": transaction_id,
-            "leg": leg,
-        })
+        data = self.gql("accept_trade", query, {})
         return data.get("accept_trade") or {}
 
     def reject_trade(self, league_id: str, transaction_id: str, leg: int) -> dict:
-        query = """
-        mutation reject_trade($league_id: Snowflake!, $transaction_id: Snowflake!, $leg: Int!) {
-          reject_trade(league_id: $league_id, transaction_id: $transaction_id, leg: $leg) {
-            transaction_id status type created
-          }
-        }
+        """Reject a proposed trade, or withdraw one you proposed. The web client uses
+        ``reject_trade`` for both."""
+        query = f"""
+        mutation reject_trade {{
+          reject_trade(
+            league_id: "{_snowflake(league_id)}",
+            transaction_id: "{_snowflake(transaction_id)}",
+            leg: {int(leg)}
+          ) {{
+            transaction_id type status leg adds drops roster_ids consenter_ids settings
+          }}
+        }}
         """
-        data = self.gql("reject_trade", query, {
-            "league_id": league_id,
-            "transaction_id": transaction_id,
-            "leg": leg,
-        })
+        data = self.gql("reject_trade", query, {})
         return data.get("reject_trade") or {}
 
     def cancel_trade(self, league_id: str, transaction_id: str, leg: int) -> dict:
-        """Cancel a trade YOU proposed (works while it's still in 'proposed' status)."""
-        query = """
-        mutation cancel_trade($league_id: Snowflake!, $transaction_id: Snowflake!, $leg: Int!) {
-          cancel_trade(league_id: $league_id, transaction_id: $transaction_id, leg: $leg) {
-            transaction_id status type created
-          }
-        }
+        """Withdraw a trade YOU proposed.
+
+        Sleeper has no ``cancel_trade`` mutation. The web client withdraws a
+        proposal with ``reject_trade`` (``force_cancel_transaction`` is
+        commissioner-only).
         """
-        data = self.gql("cancel_trade", query, {
-            "league_id": league_id,
-            "transaction_id": transaction_id,
-            "leg": leg,
-        })
-        return data.get("cancel_trade") or {}
+        return self.reject_trade(league_id, transaction_id, leg)
 
     # -- inbox / convenience reads ----------------------------------------
 
@@ -516,50 +517,58 @@ class SleeperAuthClient:
         })
         return data.get("cancel_waiver_claim") or {}
 
+    def _update_roster_list(
+        self, mutation: str, field: str, league_id: str, roster_id: int, player_ids: list[str],
+    ) -> dict:
+        """Replace a roster's ``reserve`` or ``taxi`` list (the web client sends the full list)."""
+        query = f"""
+        mutation {mutation} {{
+          {mutation}(
+            league_id: "{_snowflake(league_id)}",
+            roster_id: {int(roster_id)},
+            {field}: {_gql_list(player_ids)}
+          ) {{
+            league_id roster_id players reserve taxi starters
+          }}
+        }}
+        """
+        data = self.gql(mutation, query, {})
+        return data.get(mutation) or {}
+
+    def _roster_lists(self, league_id: str, roster_id: int) -> dict:
+        """Current ``players`` / ``reserve`` / ``taxi`` for one roster."""
+        query = f"""
+        query league_rosters {{
+          league_rosters(league_id: "{_snowflake(league_id)}") {{ roster_id players reserve taxi }}
+        }}
+        """
+        rosters = self.gql("league_rosters", query, {}).get("league_rosters") or []
+        for roster in rosters:
+            if roster.get("roster_id") == int(roster_id):
+                return {k: list(roster.get(k) or []) for k in ("players", "reserve", "taxi")}
+        raise SleeperAuthError(f"roster {roster_id} not found in league {league_id}")
+
     def move_to_taxi(self, league_id: str, roster_id: int, player_id: str) -> dict:
         """Move a rostered player to the taxi squad."""
-        query = """
-        mutation move_to_taxi($league_id: Snowflake!, $roster_id: Int!, $player_id: String!) {
-          move_to_taxi(league_id: $league_id, roster_id: $roster_id, player_id: $player_id) {
-            roster_id taxi
-          }
-        }
-        """
-        data = self.gql("move_to_taxi", query, {
-            "league_id": league_id,
-            "roster_id": roster_id,
-            "player_id": player_id,
-        })
-        return data.get("move_to_taxi") or {}
+        taxi = self._roster_lists(league_id, roster_id)["taxi"]
+        pid = _player_ids([player_id])[0]
+        return self._update_roster_list(
+            "roster_update_taxi", "taxi", league_id, roster_id, [*taxi, pid] if pid not in taxi else taxi,
+        )
 
     def move_to_ir(self, league_id: str, roster_id: int, player_id: str) -> dict:
         """Move a rostered player to IR."""
-        query = """
-        mutation move_to_ir($league_id: Snowflake!, $roster_id: Int!, $player_id: String!) {
-          move_to_ir(league_id: $league_id, roster_id: $roster_id, player_id: $player_id) {
-            roster_id reserve
-          }
-        }
-        """
-        data = self.gql("move_to_ir", query, {
-            "league_id": league_id,
-            "roster_id": roster_id,
-            "player_id": player_id,
-        })
-        return data.get("move_to_ir") or {}
+        reserve = self._roster_lists(league_id, roster_id)["reserve"]
+        pid = _player_ids([player_id])[0]
+        return self._update_roster_list(
+            "roster_update_reserve", "reserve", league_id, roster_id,
+            [*reserve, pid] if pid not in reserve else reserve,
+        )
 
     def activate_from_ir(self, league_id: str, roster_id: int, player_id: str) -> dict:
         """Activate an IR player back to the active roster."""
-        query = """
-        mutation activate_from_ir($league_id: Snowflake!, $roster_id: Int!, $player_id: String!) {
-          activate_from_ir(league_id: $league_id, roster_id: $roster_id, player_id: $player_id) {
-            roster_id reserve players
-          }
-        }
-        """
-        data = self.gql("activate_from_ir", query, {
-            "league_id": league_id,
-            "roster_id": roster_id,
-            "player_id": player_id,
-        })
-        return data.get("activate_from_ir") or {}
+        reserve = self._roster_lists(league_id, roster_id)["reserve"]
+        pid = _player_ids([player_id])[0]
+        return self._update_roster_list(
+            "roster_update_reserve", "reserve", league_id, roster_id, [r for r in reserve if r != pid],
+        )
